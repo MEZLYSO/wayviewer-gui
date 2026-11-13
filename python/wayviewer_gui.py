@@ -793,7 +793,7 @@ class WayViewerPanel:
         self.srt_port = 9000
         self.notify_after: str | None = None
 
-        self.var_host = tk.StringVar(value="127.0.0.1")
+        self.var_host = tk.StringVar(value="0.0.0.0")
         self.var_port = tk.StringVar(value="12401")
         self.var_srt_port = tk.StringVar(value="9000")
         self.var_latency = tk.StringVar(value="120")
@@ -825,8 +825,8 @@ class WayViewerPanel:
     def _configure_window(self) -> None:
         self.root.title("WayViewer · Panel de transmisión")
         self.root.configure(bg=BG)
-        self.root.minsize(860, 560)
-        width, height = 980, 800
+        self.root.minsize(980, 620)
+        width, height = 1180, 820
         screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()
         x = max(0, (screen_w - width) // 2)
@@ -836,58 +836,87 @@ class WayViewerPanel:
     def _build_header(self) -> None:
         header = tk.Frame(self.root, bg=HEADER)
         header.pack(fill="x")
+        tk.Frame(header, bg=ACCENT, height=3).pack(fill="x")
+
         inner = tk.Frame(header, bg=HEADER)
-        inner.pack(fill="x", padx=18, pady=(12, 10))
+        inner.pack(fill="x", padx=20, pady=(12, 12))
 
         top = tk.Frame(inner, bg=HEADER)
         top.pack(fill="x")
-        tk.Label(
-            top, text="WayViewer", bg=HEADER, fg=FG,
-            font=("DejaVu Sans", 16, "bold"),
-        ).pack(side="left")
 
-        tk.Button(
+        brand = tk.Frame(top, bg=HEADER)
+        brand.pack(side="left")
+        mark = tk.Frame(brand, bg=ACCENT, width=4, height=40)
+        mark.pack(side="left", padx=(0, 12))
+        mark.pack_propagate(False)
+        words = tk.Frame(brand, bg=HEADER)
+        words.pack(side="left")
+        tk.Label(
+            words, text="WayViewer", bg=HEADER, fg=FG,
+            font=("DejaVu Sans", 17, "bold"),
+        ).pack(anchor="w")
+        self.header_subtitle = tk.Label(
+            words,
+            text="Panel de transmisión, chat y archivos",
+            bg=HEADER,
+            fg=MUTED,
+            font=("DejaVu Sans", 9),
+        )
+        self.header_subtitle.pack(anchor="w")
+
+        self.refresh_btn = tk.Button(
             top,
-            text="Actualizar IPs",
+            text="↻  Actualizar IPs",
             command=lambda: self._refresh_interfaces(force=True),
             bg=CHIP,
             fg=FG,
             activebackground=BORDER,
             activeforeground=FG,
             relief="flat",
-            padx=12,
-            pady=4,
+            padx=14,
+            pady=5,
             cursor="hand2",
-            font=("DejaVu Sans", 9),
-        ).pack(side="right")
+            font=("DejaVu Sans", 9, "bold"),
+        )
+        self.refresh_btn.pack(side="right")
 
         row = tk.Frame(inner, bg=HEADER)
-        row.pack(fill="x", pady=(12, 0))
-        tk.Label(
-            row, text="INTERFACES", bg=HEADER, fg=MUTED,
+        row.pack(fill="x", pady=(14, 0))
+        self.interfaces_label = tk.Label(
+            row, text="RED LOCAL", bg=HEADER, fg=MUTED,
             font=("DejaVu Sans", 8, "bold"),
-        ).pack(side="left", padx=(0, 12))
+        )
+        self.interfaces_label.pack(side="left", padx=(0, 14))
         self.chips = tk.Frame(row, bg=HEADER)
         self.chips.pack(side="left", fill="x", expand=True)
 
-    def _make_card(self, parent: tk.Widget, title: str) -> tuple[tk.Frame, tk.Frame]:
+    def _make_card(
+        self, parent: tk.Widget, eyebrow: str, title: str, accent: str
+    ) -> tuple[tk.Frame, tk.Frame]:
         card = tk.Frame(
             parent, bg=PANEL, highlightthickness=1, highlightbackground=BORDER
         )
+        tk.Frame(card, bg=accent, height=3).pack(fill="x")
         inner = tk.Frame(card, bg=PANEL)
-        inner.pack(fill="both", expand=True, padx=14, pady=12)
+        inner.pack(fill="both", expand=True, padx=16, pady=(12, 16))
         tk.Label(
-            inner, text=title, bg=PANEL, fg=FG, font=CARD_TITLE
+            inner, text=eyebrow, bg=PANEL, fg=MUTED,
+            font=("DejaVu Sans", 8, "bold"),
         ).pack(anchor="w")
+        tk.Label(
+            inner, text=title, bg=PANEL, fg=FG,
+            font=("DejaVu Sans", 14, "bold"),
+        ).pack(anchor="w", pady=(2, 0))
         return card, inner
 
     def _field_cell(
-        self, parent: tk.Widget, column: int, label: str
+        self, parent: tk.Widget, column: int, label: str, row: int = 0
     ) -> tk.Frame:
         cell = tk.Frame(parent, bg=PANEL)
-        cell.grid(row=0, column=column, sticky="w", padx=(0, 16))
+        cell.grid(row=row, column=column, sticky="w", padx=(0, 18), pady=(0, 10))
         tk.Label(
-            cell, text=label, bg=PANEL, fg=MUTED, font=("DejaVu Sans", 9)
+            cell, text=label, bg=PANEL, fg=MUTED,
+            font=("DejaVu Sans", 8, "bold"),
         ).pack(anchor="w")
         return cell
 
@@ -933,6 +962,165 @@ class WayViewerPanel:
             step = -1 if getattr(event, "delta", 0) > 0 else 1
         self.body_canvas.yview_scroll(step, "units")
 
+    # ------------------------------------------------------ disposición
+    def _on_body_resize(self, event: tk.Event) -> None:
+        content_width = min(event.width, 1240)
+        self.body_canvas.itemconfigure(self.body_window, width=content_width)
+        self.body_canvas.coords(
+            self.body_window, max(0, (event.width - content_width) // 2), 0
+        )
+        self._apply_responsive_layout(content_width)
+
+    def _bind_wrap(self, label: tk.Label, minimum: int = 120) -> None:
+        def _update(event: tk.Event) -> None:
+            label.configure(wraplength=max(minimum, event.width - 2))
+
+        label.bind("<Configure>", _update)
+
+    def _apply_responsive_layout(self, width: int) -> None:
+        if not hasattr(self, "tx_card"):
+            return
+        if width >= 900:
+            mode = "wide"
+        elif width >= 620:
+            mode = "medium"
+        else:
+            mode = "narrow"
+        if mode == self.layout_mode:
+            return
+        self.layout_mode = mode
+        self._arrange_cards()
+        self._arrange_client_fields()
+        self._arrange_options()
+        self._arrange_footer()
+        self._arrange_file_row()
+        self._arrange_header()
+        self._arrange_chat_head()
+        self._arrange_chips()
+
+        self.status_detail.configure(
+            wraplength=240 if mode == "narrow" else 300
+        )
+        self.socket_label.configure(
+            wraplength=220 if mode == "narrow" else 292
+        )
+        self.client_ip_entry.configure(
+            width=13 if mode == "narrow" else 18
+        )
+        self.root.after_idle(self._sync_scroll_region)
+
+    def _arrange_cards(self) -> None:
+        columns = self.columns_frame
+        self.tx_card.grid_forget()
+        self.cx_card.grid_forget()
+        if self.layout_mode == "wide":
+            columns.grid_columnconfigure(0, weight=0, minsize=362)
+            columns.grid_columnconfigure(1, weight=1)
+            columns.grid_rowconfigure(0, weight=1)
+            columns.grid_rowconfigure(1, weight=0)
+            self.tx_card.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
+            self.cx_card.grid(row=0, column=1, sticky="nsew")
+        else:
+            columns.grid_columnconfigure(0, weight=1, minsize=0)
+            columns.grid_columnconfigure(1, weight=0, minsize=0)
+            columns.grid_rowconfigure(0, weight=0)
+            columns.grid_rowconfigure(1, weight=0)
+            self.tx_card.grid(
+                row=0, column=0, columnspan=2, sticky="ew", pady=(0, 14)
+            )
+            self.cx_card.grid(row=1, column=0, columnspan=2, sticky="ew")
+
+    def _arrange_client_fields(self) -> None:
+        if self.layout_mode == "narrow":
+            positions = ((0, 0), (1, 0), (1, 1))
+        else:
+            positions = ((0, 0), (0, 1), (0, 2))
+        cells = (
+            self.client_ip_cell,
+            self.client_port_cell,
+            self.client_latency_cell,
+        )
+        for cell, (row, column) in zip(cells, positions):
+            cell.grid_configure(row=row, column=column)
+
+    def _arrange_options(self) -> None:
+        per_row = 2 if self.layout_mode == "narrow" else 4
+        for index, button in enumerate(self.option_buttons):
+            button.grid_configure(
+                row=1 + index // per_row, column=index % per_row
+            )
+
+    def _arrange_footer(self) -> None:
+        footer = self.footer
+        self.connect_btn.grid_forget()
+        self.client_status.grid_forget()
+        footer.grid_columnconfigure(1, weight=1)
+        if self.layout_mode == "narrow":
+            self.connect_btn.grid(row=0, column=0, sticky="w")
+            self.client_status.grid(
+                row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0)
+            )
+        else:
+            self.connect_btn.grid(row=0, column=0, sticky="w")
+            self.client_status.grid(
+                row=0, column=1, sticky="ew", padx=(14, 0)
+            )
+
+    def _arrange_file_row(self) -> None:
+        row = self.file_row
+        self.file_btn.grid_forget()
+        self.file_status.grid_forget()
+        row.grid_columnconfigure(1, weight=1)
+        if self.layout_mode == "narrow":
+            self.file_btn.grid(row=0, column=0, sticky="w")
+            self.file_status.grid(
+                row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0)
+            )
+        else:
+            self.file_btn.grid(row=0, column=0, sticky="w")
+            self.file_status.grid(
+                row=0, column=1, sticky="ew", padx=(12, 0)
+            )
+
+    def _arrange_header(self) -> None:
+        narrow = self.layout_mode == "narrow"
+        self.header_subtitle.configure(
+            text=(
+                "Transmisión · chat y archivos"
+                if narrow
+                else "Panel de transmisión, chat y archivos"
+            )
+        )
+        self.refresh_btn.configure(
+            text="↻ IPs" if narrow else "↻  Actualizar IPs"
+        )
+        self.interfaces_label.configure(
+            text="RED" if narrow else "RED LOCAL"
+        )
+
+    def _arrange_chat_head(self) -> None:
+        self.chat_btn.pack_forget()
+        self.chat_titles.pack_forget()
+        if self.layout_mode == "narrow":
+            self.chat_titles.pack(anchor="w")
+            self.chat_btn.pack(anchor="w", pady=(6, 0))
+        else:
+            self.chat_titles.pack(side="left")
+            self.chat_btn.pack(side="right")
+
+    def _arrange_chips(self) -> None:
+        chips = getattr(self, "chip_widgets", None)
+        if not chips:
+            return
+        per_row = 2 if self.layout_mode == "narrow" else len(chips)
+        for index, widget in enumerate(chips):
+            widget.grid_configure(
+                row=index // per_row,
+                column=index % per_row,
+                padx=(0, 8),
+                pady=(0, 6) if self.layout_mode == "narrow" else (0, 0),
+            )
+
     def _build_body(self) -> None:
         container = tk.Frame(self.root, bg=BG)
         container.pack(fill="both", expand=True)
@@ -959,50 +1147,78 @@ class WayViewerPanel:
             (0, 0), window=holder, anchor="nw"
         )
         holder.bind("<Configure>", self._sync_scroll_region)
-        self.body_canvas.bind(
-            "<Configure>",
-            lambda event: self.body_canvas.itemconfigure(
-                self.body_window, width=event.width
-            ),
-        )
+        self.body_canvas.bind("<Configure>", self._on_body_resize)
         self.root.bind_all("<MouseWheel>", self._on_body_wheel)
         self.root.bind_all("<Button-4>", self._on_body_wheel)
         self.root.bind_all("<Button-5>", self._on_body_wheel)
 
         body = tk.Frame(holder, bg=BG)
-        body.pack(fill="both", expand=True, padx=14, pady=12)
+        body.pack(fill="both", expand=True, padx=16, pady=14)
 
-        # --- Sección Transmitir imagen ------------------------------------
-        tx_card, tx = self._make_card(body, "Transmitir imagen")
-        tx_card.pack(fill="x")
+        self.layout_mode = ""
+        columns = tk.Frame(body, bg=BG)
+        self.columns_frame = columns
+        columns.pack(fill="both", expand=True)
+        columns.grid_columnconfigure(0, weight=0, minsize=362)
+        columns.grid_columnconfigure(1, weight=1)
+        columns.grid_rowconfigure(0, weight=1)
+
+        # --- Columna izquierda: Transmitir imagen -------------------------
+        tx_card, tx = self._make_card(
+            columns, "EMISIÓN", "Transmitir imagen", GREEN
+        )
+        self.tx_card = tx_card
+        tx_card.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
+
+        host_row = tk.Frame(tx, bg=PANEL)
+        host_row.pack(fill="x", pady=(10, 0))
+        tk.Label(
+            host_row, text="HOST", bg=PANEL, fg=MUTED,
+            font=("DejaVu Sans", 8, "bold"),
+        ).pack(side="left")
+        tk.Label(
+            host_row, text="0.0.0.0", bg=PANEL, fg=GREEN, font=MONO,
+        ).pack(side="left", padx=(10, 0))
+        tk.Label(
+            host_row, text="· todas las interfaces", bg=PANEL, fg=MUTED,
+            font=("DejaVu Sans", 8),
+        ).pack(side="left", padx=(8, 0))
 
         grid = tk.Frame(tx, bg=PANEL)
-        grid.pack(fill="x", pady=(10, 0))
+        grid.pack(fill="x", pady=(8, 0))
         fields = [
-            ("Host wayviewer", self.var_host, 16),
-            ("Puerto wayviewer", self.var_port, 9),
-            ("Puerto SRT", self.var_srt_port, 9),
-            ("Latencia (ms)", self.var_latency, 9),
+            ("Puerto wayviewer", self.var_port, 9, 0, 0),
+            ("Puerto SRT", self.var_srt_port, 9, 0, 1),
+            ("Latencia (ms)", self.var_latency, 9, 1, 0),
         ]
-        for column, (label, variable, width) in enumerate(fields):
-            cell = self._field_cell(grid, column, label)
+        for label, variable, width, row, column in fields:
+            cell = self._field_cell(grid, column, label, row=row)
             self._dark_entry(cell, variable, width).pack(
                 anchor="w", pady=(4, 0), ipady=3
             )
 
+        socket_box = tk.Frame(
+            tx, bg="#0b0e13", highlightthickness=1, highlightbackground=BORDER
+        )
+        socket_box.pack(fill="x", pady=(4, 0))
         tk.Label(
-            tx,
-            text=f"Socket Unix: {self.socket_path}",
-            bg=PANEL,
-            fg=MUTED,
+            socket_box, text="SOCKET UNIX", bg="#0b0e13", fg=MUTED,
+            font=("DejaVu Sans", 8, "bold"),
+        ).pack(anchor="w", padx=10, pady=(7, 0))
+        self.socket_label = tk.Label(
+            socket_box,
+            text=self.socket_path,
+            bg="#0b0e13",
+            fg=FG,
             font=MONO_SMALL,
-        ).pack(anchor="w", pady=(10, 0))
-
-        actions = tk.Frame(tx, bg=PANEL)
-        actions.pack(fill="x", pady=(12, 0))
+            anchor="w",
+            justify="left",
+            wraplength=292,
+        )
+        self.socket_label.pack(fill="x", padx=10, pady=(2, 8))
 
         self.action_btn = tk.Button(
-            actions,
+            tx,
             text="Transmitir imagen",
             command=self._on_action,
             bg=GREEN,
@@ -1011,68 +1227,81 @@ class WayViewerPanel:
             activeforeground="#04150a",
             disabledforeground="#6e7681",
             relief="flat",
-            padx=26,
+            padx=20,
             pady=10,
             cursor="hand2",
             font=SANS_BOLD,
         )
-        self.action_btn.pack(side="left")
+        self.action_btn.pack(fill="x", pady=(14, 0))
 
-        status = tk.Frame(actions, bg=PANEL)
-        status.pack(side="left", padx=(18, 0))
+        status = tk.Frame(
+            tx, bg=CHIP, highlightthickness=1, highlightbackground=BORDER
+        )
+        status.pack(fill="x", pady=(10, 0))
         self.status_dot = tk.Label(
-            status, text="●", bg=PANEL, fg=MUTED, font=("DejaVu Sans", 15)
+            status, text="●", bg=CHIP, fg=MUTED, font=("DejaVu Sans", 15)
         )
-        self.status_dot.pack(side="left", anchor="n", pady=(2, 0))
-        status_text = tk.Frame(status, bg=PANEL)
-        status_text.pack(side="left", padx=(6, 0))
+        self.status_dot.pack(side="left", padx=(10, 0), pady=8)
+        status_text = tk.Frame(status, bg=CHIP)
+        status_text.pack(side="left", padx=(6, 10), pady=8, fill="x", expand=True)
         self.status_title = tk.Label(
-            status_text, text="", bg=PANEL, fg=FG,
-            font=("DejaVu Sans", 10, "bold"),
+            status_text, text="", bg=CHIP, fg=FG,
+            font=("DejaVu Sans", 10, "bold"), anchor="w",
         )
-        self.status_title.pack(anchor="w")
+        self.status_title.pack(fill="x")
         self.status_detail = tk.Label(
-            status_text, text="", bg=PANEL, fg=MUTED, font=("DejaVu Sans", 9)
+            status_text, text="", bg=CHIP, fg=MUTED,
+            font=("DejaVu Sans", 9), anchor="w", justify="left",
+            wraplength=300,
         )
-        self.status_detail.pack(anchor="w")
+        self.status_detail.pack(fill="x")
 
-        # --- Sección Conectar ---------------------------------------------
-        cx_card, cx = self._make_card(body, "Conectar")
-        cx_card.pack(fill="both", expand=True, pady=(14, 0))
+        # --- Columna derecha: Conectar ------------------------------------
+        cx_card, cx = self._make_card(columns, "RECEPCIÓN", "Conectar", ACCENT)
+        self.cx_card = cx_card
+        cx_card.grid(row=0, column=1, sticky="nsew")
 
         client_grid = tk.Frame(cx, bg=PANEL)
+        self.client_grid = client_grid
         client_grid.pack(fill="x", pady=(10, 0))
 
         ip_cell = self._field_cell(client_grid, 0, "IP de destino")
+        self.client_ip_cell = ip_cell
         self.client_ip_entry = self._dark_entry(
-            ip_cell, self.var_client_ip, 20
+            ip_cell, self.var_client_ip, 18
         )
         self.client_ip_entry.pack(anchor="w", pady=(4, 0), ipady=3)
 
         port_cell = self._field_cell(client_grid, 1, "Puerto SRT")
+        self.client_port_cell = port_cell
         self._dark_entry(port_cell, self.var_srt_port, 9).pack(
             anchor="w", pady=(4, 0), ipady=3
         )
 
         latency_cell = self._field_cell(client_grid, 2, "Latencia (ms)")
+        self.client_latency_cell = latency_cell
         self._dark_entry(latency_cell, self.var_client_latency, 9).pack(
             anchor="w", pady=(4, 0), ipady=3
         )
 
         options = tk.Frame(cx, bg=PANEL)
-        options.pack(fill="x", pady=(10, 0))
+        self.options_frame = options
+        options.pack(fill="x", pady=(0, 2))
         tk.Label(
-            options, text="Opciones:", bg=PANEL, fg=MUTED,
-            font=("DejaVu Sans", 9),
-        ).pack(side="left", padx=(0, 8))
+            options, text="OPCIONES", bg=PANEL, fg=MUTED,
+            font=("DejaVu Sans", 8, "bold"),
+        ).grid(row=0, column=0, sticky="w", pady=(0, 4))
 
-        for label, variable in (
-            ("nobuffer", self.var_nobuffer),
-            ("low_delay", self.var_low_delay),
-            ("framedrop", self.var_framedrop),
-            ("tlpktdrop", self.var_tlpktdrop),
+        self.option_buttons = []
+        for index, (label, variable) in enumerate(
+            (
+                ("nobuffer", self.var_nobuffer),
+                ("low_delay", self.var_low_delay),
+                ("framedrop", self.var_framedrop),
+                ("tlpktdrop", self.var_tlpktdrop),
+            )
         ):
-            tk.Checkbutton(
+            button = tk.Checkbutton(
                 options,
                 text=label,
                 variable=variable,
@@ -1085,10 +1314,14 @@ class WayViewerPanel:
                 bd=0,
                 cursor="hand2",
                 font=("DejaVu Sans", 9),
-            ).pack(side="left", padx=(0, 12))
+            )
+            button.grid(row=1, column=index, sticky="w", padx=(0, 12))
+            self.option_buttons.append(button)
 
         footer = tk.Frame(cx, bg=PANEL)
-        footer.pack(fill="x", pady=(12, 0))
+        self.footer = footer
+        footer.pack(fill="x", pady=(10, 0))
+        footer.grid_columnconfigure(1, weight=1)
         self.connect_btn = tk.Button(
             footer,
             text="Conectar a transmisión",
@@ -1104,7 +1337,7 @@ class WayViewerPanel:
             cursor="hand2",
             font=("DejaVu Sans", 11, "bold"),
         )
-        self.connect_btn.pack(side="left")
+        self.connect_btn.grid(row=0, column=0, sticky="w")
 
         self.client_status = tk.Label(
             footer,
@@ -1114,21 +1347,30 @@ class WayViewerPanel:
             font=("DejaVu Sans", 9),
             anchor="w",
             justify="left",
-            wraplength=520,
+            wraplength=360,
         )
-        self.client_status.pack(side="left", padx=(14, 0))
+        self.client_status.grid(row=0, column=1, sticky="ew", padx=(14, 0))
+        self._bind_wrap(self.client_status, 110)
 
         # --- Chat TCP -----------------------------------------------------
-        tk.Frame(cx, bg=BORDER, height=1).pack(fill="x", pady=(12, 0))
+        tk.Frame(cx, bg=BORDER, height=1).pack(fill="x", pady=(14, 0))
         chat_head = tk.Frame(cx, bg=PANEL)
+        self.chat_head = chat_head
         chat_head.pack(fill="x", pady=(10, 0))
+        chat_titles = tk.Frame(chat_head, bg=PANEL)
+        self.chat_titles = chat_titles
+        chat_titles.pack(side="left")
         tk.Label(
-            chat_head,
-            text=f"Chat TCP · puerto {CHAT_PORT}",
+            chat_titles, text="CHAT Y ARCHIVOS", bg=PANEL, fg=MUTED,
+            font=("DejaVu Sans", 8, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            chat_titles,
+            text=f"TCP · puerto {CHAT_PORT}",
             bg=PANEL,
             fg=FG,
-            font=("DejaVu Sans", 9, "bold"),
-        ).pack(side="left")
+            font=("DejaVu Sans", 10, "bold"),
+        ).pack(anchor="w")
         self.chat_btn = tk.Button(
             chat_head,
             text="Conectar chat",
@@ -1139,8 +1381,8 @@ class WayViewerPanel:
             activeforeground="#ffffff",
             disabledforeground="#6e7681",
             relief="flat",
-            padx=12,
-            pady=4,
+            padx=14,
+            pady=5,
             cursor="hand2",
             font=("DejaVu Sans", 9, "bold"),
         )
@@ -1149,7 +1391,7 @@ class WayViewerPanel:
         chat_box = tk.Frame(
             cx, bg="#0b0e13", highlightthickness=1, highlightbackground=BORDER
         )
-        chat_box.pack(fill="both", expand=True, pady=(6, 0))
+        chat_box.pack(fill="both", expand=True, pady=(8, 0))
         chat_scroll = tk.Scrollbar(
             chat_box,
             bg=PANEL,
@@ -1167,7 +1409,7 @@ class WayViewerPanel:
             selectbackground=ACCENT,
             relief="flat",
             wrap="word",
-            height=6,
+            height=7,
             font=MONO_SMALL,
             padx=10,
             pady=8,
@@ -1206,7 +1448,9 @@ class WayViewerPanel:
         self.chat_send_btn.pack(side="left", padx=(8, 0))
 
         file_row = tk.Frame(cx, bg=PANEL)
+        self.file_row = file_row
         file_row.pack(fill="x", pady=(8, 0))
+        file_row.grid_columnconfigure(1, weight=1)
         self.file_btn = tk.Button(
             file_row,
             text="Enviar archivo…",
@@ -1222,7 +1466,7 @@ class WayViewerPanel:
             cursor="hand2",
             font=("DejaVu Sans", 9, "bold"),
         )
-        self.file_btn.pack(side="left")
+        self.file_btn.grid(row=0, column=0, sticky="w")
         self.file_status = tk.Label(
             file_row,
             text=f"Se guardan en {FILE_DIR}",
@@ -1231,9 +1475,10 @@ class WayViewerPanel:
             font=("DejaVu Sans", 9),
             anchor="w",
             justify="left",
-            wraplength=520,
+            wraplength=380,
         )
-        self.file_status.pack(side="left", padx=(12, 0), fill="x", expand=True)
+        self.file_status.grid(row=0, column=1, sticky="ew", padx=(12, 0))
+        self._bind_wrap(self.file_status, 110)
 
     # ------------------------------------------------------- interfaz de red
     def _refresh_interfaces(self, force: bool = False) -> None:
@@ -1251,16 +1496,19 @@ class WayViewerPanel:
         for child in self.chips.winfo_children():
             child.destroy()
 
+        self.chip_widgets = []
         if not interfaces:
-            tk.Label(
+            no_interfaces = tk.Label(
                 self.chips,
                 text="No se detectaron interfaces IPv4",
                 bg=HEADER,
                 fg=MUTED,
                 font=("DejaVu Sans", 9),
-            ).pack(side="left")
+            )
+            no_interfaces.grid(row=0, column=0, sticky="w")
+            self.chip_widgets.append(no_interfaces)
         else:
-            for name, ip_text in interfaces:
+            for index, (name, ip_text) in enumerate(interfaces):
                 default_mark = " ★" if name == default_name else ""
                 chip = tk.Frame(
                     self.chips,
@@ -1271,7 +1519,7 @@ class WayViewerPanel:
                     pady=5,
                     cursor="hand2",
                 )
-                chip.pack(side="left", padx=(0, 8))
+                chip.grid(row=0, column=index, sticky="w", padx=(0, 8))
                 name_label = tk.Label(
                     chip,
                     text=name + default_mark,
@@ -1298,6 +1546,9 @@ class WayViewerPanel:
                             ip, f"IP copiada: {ip}"
                         ),
                     )
+                self.chip_widgets.append(chip)
+
+        self._arrange_chips()
 
         if self.state == "running":
             self._show_running_detail()
