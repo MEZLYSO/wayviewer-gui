@@ -7,11 +7,14 @@ Sección «Transmitir imagen»:
 
 Sección «Conectar»:
   genera el comando ffplay para el equipo cliente, permitiendo elegir IP,
-  puerto y varios parámetros.
+  puerto y varios parámetros. Incluye un chat TCP bidireccional y envío de
+  archivos; lo recibido se guarda en ~/wayviewer.
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
 import ipaddress
 import os
 import queue
@@ -22,6 +25,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from collections import deque
 
 try:
@@ -43,6 +47,11 @@ try:
     CHAT_PORT = int(os.environ.get("WAYVIEWER_CHAT_PORT", "9500"))
 except ValueError:
     CHAT_PORT = 9500
+
+FILE_DIR = os.path.join(os.path.expanduser("~"), "wayviewer")
+CHAT_CHUNK = 24 * 1024
+MAX_FILE_SIZE = 8 * 1024**3
+FILE_MAGIC = "\x01WV"
 
 # Paleta oscura.
 BG = "#0f1115"
@@ -171,6 +180,89 @@ class Cancelled(Exception):
     """El usuario pidió detener mientras se iniciaba."""
 
 
+class GtkUnavailable(Exception):
+    """El selector de archivos de GTK no está disponible."""
+
+
+def ensure_file_dir() -> str:
+    os.makedirs(FILE_DIR, exist_ok=True)
+    return FILE_DIR
+
+
+def format_size(size: int | str) -> str:
+    try:
+        value = float(max(0, int(size)))
+    except (TypeError, ValueError):
+        return str(size)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if value < 1024 or unit == "TB":
+            if unit == "B":
+                return f"{int(value)} B"
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{int(size)} B"
+
+
+def safe_filename(name: str) -> str:
+    name = os.path.basename(name.replace("\\", "/")).strip()
+    name = "".join(char for char in name if char.isprintable())
+    if name in ("", ".", ".."):
+        return "archivo"
+    return name[:180]
+
+
+def unique_path(directory: str, name: str) -> str:
+    base, extension = os.path.splitext(name)
+    candidate = os.path.join(directory, name)
+    index = 1
+    while os.path.exists(candidate):
+        candidate = os.path.join(directory, f"{base}-{index}{extension}")
+        index += 1
+    return candidate
+
+
+def pick_file_with_gtk(initial_dir: str | None = None) -> str | None:
+    """Abre el selector de archivos de GTK 3 y devuelve la ruta elegida."""
+    try:
+        import gi
+
+        gi.require_version("Gtk", "3.0")
+        from gi.repository import Gtk
+    except (ImportError, ValueError) as exc:
+        raise GtkUnavailable(str(exc)) from exc
+
+    try:
+        initialized, _argv = Gtk.init_check([])
+    except TypeError:  # pragma: no cover - variantes antiguas de PyGObject
+        initialized = True
+    if not initialized:
+        raise GtkUnavailable("GTK no pudo inicializarse")
+
+    dialog = Gtk.FileChooserDialog(
+        title="Seleccionar archivo para enviar",
+        action=Gtk.FileChooserAction.OPEN,
+    )
+    dialog.add_buttons(
+        "Cancelar",
+        Gtk.ResponseType.CANCEL,
+        "Enviar",
+        Gtk.ResponseType.OK,
+    )
+    dialog.set_modal(True)
+    if initial_dir and os.path.isdir(initial_dir):
+        try:
+            dialog.set_current_folder(initial_dir)
+        except Exception:
+            pass
+    try:
+        response = dialog.run()
+        if response == Gtk.ResponseType.OK:
+            return dialog.get_filename()
+        return None
+    finally:
+        dialog.destroy()
+
+
 class TcpChat:
     """Chat TCP mínimo: escucha en un puerto y permite una conexión a la vez."""
 
@@ -178,12 +270,17 @@ class TcpChat:
         self.port = port
         self.events = events
         self.lock = threading.Lock()
+        self.write_lock = threading.Lock()
         self.stop_event = threading.Event()
         self.sock: socket.socket | None = None
         self.server: socket.socket | None = None
         self.listener_thread: threading.Thread | None = None
         self.reader_thread: threading.Thread | None = None
         self.connecting = False
+        self.incoming: dict[str, dict] = {}
+        self.outgoing_cancel: set[str] = set()
+        self.sending = False
+        self.send_threads: list[threading.Thread] = []
         self._start_server()
 
     @property
@@ -313,7 +410,13 @@ class TcpChat:
                 if self.stop_event.is_set():
                     return
                 text = line.rstrip("\r\n")
-                if text:
+                if not text:
+                    continue
+                if text.startswith("\x01\x01"):
+                    self.events.put(("chat_incoming", text[1:][:4000]))
+                elif text.startswith(FILE_MAGIC):
+                    self._handle_file_line(text[len(FILE_MAGIC):])
+                else:
                     self.events.put(("chat_incoming", text[:4000]))
         except OSError:
             reason = "Conexión de chat interrumpida."
@@ -322,23 +425,246 @@ class TcpChat:
                 reader.close()
             except OSError:
                 pass
+            self._abort_all_incoming()
 
         if self.stop_event.is_set():
             self._clear(conn)
         else:
             self._drop(conn, reason)
 
-    def send(self, text: str) -> bool:
-        with self.lock:
-            conn = self.sock
-        if conn is None:
-            return False
-        try:
-            conn.sendall((text + "\n").encode("utf-8"))
-        except OSError as exc:
-            self._drop(conn, f"Error al enviar: {exc}")
-            return False
+    def _send_line(self, payload: str) -> bool:
+        with self.write_lock:
+            with self.lock:
+                conn = self.sock
+            if conn is None:
+                return False
+            try:
+                conn.sendall(payload.encode("utf-8"))
+            except OSError as exc:
+                self._drop(conn, f"Error al enviar: {exc}")
+                return False
         return True
+
+    def send(self, text: str) -> bool:
+        if text.startswith("\x01"):
+            text = "\x01" + text
+        return self._send_line(text + "\n")
+
+    # ------------------------------------------------------ archivos
+    def send_file(self, path: str) -> bool:
+        with self.lock:
+            if self.sock is None or self.sending:
+                return False
+            self.sending = True
+        thread = threading.Thread(
+            target=self._send_file_worker,
+            args=(path,),
+            name="chat-send-file",
+            daemon=True,
+        )
+        self.send_threads.append(thread)
+        thread.start()
+        return True
+
+    def _send_file_worker(self, path: str) -> None:
+        name = os.path.basename(path) or "archivo"
+        transfer_id = ""
+        try:
+            size = os.path.getsize(path)
+            if size > MAX_FILE_SIZE:
+                raise OSError(
+                    f"el archivo supera el límite de {format_size(MAX_FILE_SIZE)}"
+                )
+            transfer_id = uuid.uuid4().hex[:12]
+            encoded_name = base64.b64encode(name.encode("utf-8")).decode("ascii")
+            total = (size + CHAT_CHUNK - 1) // CHAT_CHUNK
+            self.events.put(("file_send_start", f"{name}\t{size}"))
+            if not self._send_line(
+                f"{FILE_MAGIC}F\t{transfer_id}\t{total}\t{size}\t{encoded_name}\n"
+            ):
+                raise OSError("chat desconectado")
+
+            sent = 0
+            sequence = 0
+            last_emit = 0.0
+            with open(path, "rb") as handle:
+                while True:
+                    if transfer_id in self.outgoing_cancel:
+                        raise OSError("el receptor canceló la transferencia")
+                    chunk = handle.read(CHAT_CHUNK)
+                    if not chunk:
+                        break
+                    encoded = base64.b64encode(chunk).decode("ascii")
+                    if not self._send_line(
+                        f"{FILE_MAGIC}D\t{transfer_id}\t{sequence}\t{encoded}\n"
+                    ):
+                        raise OSError("chat desconectado")
+                    sent += len(chunk)
+                    sequence += 1
+                    now = time.time()
+                    if now - last_emit >= 0.4 or sent >= size:
+                        last_emit = now
+                        percent = int(sent * 100 / size) if size else 100
+                        self.events.put(
+                            ("file_send_progress", f"{name}\t{percent}")
+                        )
+
+            if not self._send_line(f"{FILE_MAGIC}E\t{transfer_id}\n"):
+                raise OSError("chat desconectado")
+            self.events.put(("file_send_done", name))
+        except (OSError, ValueError) as exc:
+            self.events.put(("file_send_error", f"{name}: {exc}"))
+            if transfer_id:
+                self._send_line(f"{FILE_MAGIC}X\t{transfer_id}\n")
+        finally:
+            self.outgoing_cancel.discard(transfer_id)
+            with self.lock:
+                self.sending = False
+
+    def _handle_file_line(self, payload: str) -> None:
+        parts = payload.split("\t")
+        kind = parts[0]
+        if kind == "F" and len(parts) >= 5:
+            self._begin_incoming(parts[1], parts[2], parts[3], parts[4])
+        elif kind == "D" and len(parts) >= 4:
+            self._chunk_incoming(parts[1], parts[2], parts[3])
+        elif kind == "E" and len(parts) >= 2:
+            self._finish_incoming(parts[1])
+        elif kind == "X" and len(parts) >= 2:
+            self.outgoing_cancel.add(parts[1])
+
+    def _begin_incoming(
+        self, transfer_id: str, total_text: str, size_text: str, name_b64: str
+    ) -> None:
+        try:
+            total = int(total_text)
+            size = int(size_text)
+        except ValueError:
+            return
+        if not 0 <= size <= MAX_FILE_SIZE:
+            self._send_line(f"{FILE_MAGIC}X\t{transfer_id}\n")
+            return
+        expected_total = (size + CHAT_CHUNK - 1) // CHAT_CHUNK
+        if total != expected_total:
+            self._send_line(f"{FILE_MAGIC}X\t{transfer_id}\n")
+            return
+        try:
+            raw_name = base64.b64decode(name_b64.encode("ascii"), validate=True)
+            name = raw_name.decode("utf-8", "replace")
+        except (ValueError, binascii.Error):
+            name = "archivo"
+        name = safe_filename(name)
+
+        directory = ensure_file_dir()
+        part_path = os.path.join(directory, f".part-{transfer_id}")
+        try:
+            handle = open(part_path, "wb")
+        except OSError as exc:
+            self.events.put(("file_recv_error", f"{name}: {exc}"))
+            self._send_line(f"{FILE_MAGIC}X\t{transfer_id}\n")
+            return
+
+        self.incoming[transfer_id] = {
+            "name": name,
+            "directory": directory,
+            "size": size,
+            "total": total,
+            "received": 0,
+            "next": 0,
+            "part": part_path,
+            "handle": handle,
+            "last": 0.0,
+        }
+        self.events.put(("file_recv_start", f"{name}\t{size}"))
+
+    def _chunk_incoming(
+        self, transfer_id: str, sequence_text: str, chunk_b64: str
+    ) -> None:
+        state = self.incoming.get(transfer_id)
+        if state is None:
+            return
+        try:
+            sequence = int(sequence_text)
+            data = base64.b64decode(chunk_b64.encode("ascii"), validate=True)
+        except (ValueError, binascii.Error):
+            self._abort_incoming(transfer_id, "datos inválidos")
+            return
+        if (
+            sequence != state["next"]
+            or state["received"] + len(data) > state["size"]
+        ):
+            self._abort_incoming(transfer_id, "transferencia corrupta")
+            return
+        try:
+            state["handle"].write(data)
+        except OSError as exc:
+            self._abort_incoming(transfer_id, str(exc))
+            return
+        state["received"] += len(data)
+        state["next"] += 1
+        now = time.time()
+        if now - state["last"] >= 0.4 or state["received"] >= state["size"]:
+            state["last"] = now
+            percent = (
+                int(state["received"] * 100 / state["size"])
+                if state["size"]
+                else 100
+            )
+            self.events.put(
+                ("file_recv_progress", f"{state['name']}\t{percent}")
+            )
+
+    def _finish_incoming(self, transfer_id: str) -> None:
+        state = self.incoming.pop(transfer_id, None)
+        if state is None:
+            return
+        try:
+            state["handle"].close()
+            if (
+                state["received"] != state["size"]
+                or state["next"] != state["total"]
+            ):
+                raise OSError("transferencia incompleta")
+            target = unique_path(state["directory"], state["name"])
+            os.replace(state["part"], target)
+        except OSError as exc:
+            try:
+                os.remove(state["part"])
+            except OSError:
+                pass
+            self.events.put(("file_recv_error", f"{state['name']}: {exc}"))
+            self._send_line(f"{FILE_MAGIC}X\t{transfer_id}\n")
+            return
+        self.events.put(("file_recv_done", target))
+
+    def _abort_incoming(self, transfer_id: str, reason: str) -> None:
+        state = self.incoming.pop(transfer_id, None)
+        if state is None:
+            return
+        try:
+            state["handle"].close()
+        except OSError:
+            pass
+        try:
+            os.remove(state["part"])
+        except OSError:
+            pass
+        self.events.put(("file_recv_error", f"{state['name']}: {reason}"))
+        self._send_line(f"{FILE_MAGIC}X\t{transfer_id}\n")
+
+    def _abort_all_incoming(self) -> None:
+        for transfer_id in list(self.incoming):
+            state = self.incoming.pop(transfer_id, None)
+            if state is None:
+                continue
+            try:
+                state["handle"].close()
+            except OSError:
+                pass
+            try:
+                os.remove(state["part"])
+            except OSError:
+                pass
 
     def _clear(self, conn: socket.socket) -> bool:
         with self.lock:
@@ -381,9 +707,11 @@ class TcpChat:
             except OSError:
                 pass
             self.server = None
-        for thread in (self.listener_thread, self.reader_thread):
+        threads = [self.listener_thread, self.reader_thread, *self.send_threads]
+        for thread in threads:
             if thread is not None and thread.is_alive():
                 thread.join(timeout=0.5)
+        self._abort_all_incoming()
 
 
 class WayViewerPanel:
@@ -827,6 +1155,36 @@ class WayViewerPanel:
         )
         self.chat_send_btn.pack(side="left", padx=(8, 0))
 
+        file_row = tk.Frame(cx, bg=PANEL)
+        file_row.pack(fill="x", pady=(8, 0))
+        self.file_btn = tk.Button(
+            file_row,
+            text="Enviar archivo…",
+            command=self._pick_and_send_file,
+            bg=CHIP,
+            fg=FG,
+            activebackground=BORDER,
+            activeforeground=FG,
+            disabledforeground="#6e7681",
+            relief="flat",
+            padx=14,
+            pady=5,
+            cursor="hand2",
+            font=("DejaVu Sans", 9, "bold"),
+        )
+        self.file_btn.pack(side="left")
+        self.file_status = tk.Label(
+            file_row,
+            text=f"Se guardan en {FILE_DIR}",
+            bg=PANEL,
+            fg=MUTED,
+            font=("DejaVu Sans", 9),
+            anchor="w",
+            justify="left",
+            wraplength=520,
+        )
+        self.file_status.pack(side="left", padx=(12, 0), fill="x", expand=True)
+
     # ------------------------------------------------------- interfaz de red
     def _refresh_interfaces(self, force: bool = False) -> None:
         interfaces = list_interfaces()
@@ -1137,6 +1495,7 @@ class WayViewerPanel:
         )
         self.chat_entry.configure(state="disabled")
         self.chat_send_btn.configure(state="disabled")
+        self.file_btn.configure(state="disabled")
         self._chat_append(
             "system", f"Conectando chat a {ip_text}:{CHAT_PORT}…"
         )
@@ -1155,6 +1514,7 @@ class WayViewerPanel:
             )
             self.chat_entry.configure(state="normal")
             self.chat_send_btn.configure(state="normal")
+            self.file_btn.configure(state="normal")
             self.chat_entry.focus_set()
         else:
             self.client_ip_entry.configure(state="normal")
@@ -1167,7 +1527,9 @@ class WayViewerPanel:
             )
             self.chat_entry.configure(state="disabled")
             self.chat_send_btn.configure(state="disabled")
+            self.file_btn.configure(state="disabled")
             self.var_chat_message.set("")
+            self._set_file_status(f"Se guardan en {FILE_DIR}")
 
     def _send_chat(self, _event: object = None) -> str:
         if not self.chat_connected:
@@ -1186,6 +1548,42 @@ class WayViewerPanel:
                 "error", "No se pudo enviar el mensaje: chat desconectado."
             )
         return "break"
+
+    # ---------------------------------------------------------- archivos
+    def _set_file_status(self, message: str, color: str = MUTED) -> None:
+        if hasattr(self, "file_status"):
+            self.file_status.configure(text=message, fg=color)
+
+    def _pick_and_send_file(self) -> None:
+        if not self.chat_connected:
+            return
+        try:
+            path = pick_file_with_gtk(ensure_file_dir())
+        except GtkUnavailable:
+            from tkinter import filedialog
+
+            path = filedialog.askopenfilename(
+                parent=self.root,
+                title="Seleccionar archivo para enviar",
+                initialdir=ensure_file_dir(),
+            )
+        if not path:
+            return
+        if not os.path.isfile(path):
+            messagebox.showerror(
+                "Archivo no válido",
+                f"No se encontró el archivo:\n{path}",
+                parent=self.root,
+            )
+            return
+        if not self.chat.send_file(path):
+            self._set_file_status(
+                "No se pudo iniciar el envío. ¿Ya hay otro en curso?", RED
+            )
+            return
+        self._set_file_status(
+            f"Preparando envío de {os.path.basename(path)}…", AMBER
+        )
 
     def _chat_append(self, kind: str, text: str) -> None:
         if not hasattr(self, "chat_log"):
@@ -1239,8 +1637,49 @@ class WayViewerPanel:
                     self._chat_append("incoming", payload)
                 elif kind == "chat_system":
                     self._chat_append("system", payload)
+                elif kind == "file_send_start":
+                    name, size_text = self._split_payload(payload)
+                    self._set_file_status(
+                        f"Enviando {name} ({format_size(size_text)})…", AMBER
+                    )
+                    self._chat_append("system", f"Enviando archivo: {name}")
+                elif kind == "file_send_progress":
+                    name, percent = self._split_payload(payload)
+                    self._set_file_status(
+                        f"Enviando {name}: {percent}%", AMBER
+                    )
+                elif kind == "file_send_done":
+                    self._set_file_status(f"Archivo enviado: {payload}", GREEN)
+                    self._chat_append("system", f"Archivo enviado: {payload}")
+                elif kind == "file_send_error":
+                    self._set_file_status(f"Error al enviar: {payload}", RED)
+                    self._chat_append("error", f"Error al enviar: {payload}")
+                elif kind == "file_recv_start":
+                    name, size_text = self._split_payload(payload)
+                    self._set_file_status(
+                        f"Recibiendo {name} ({format_size(size_text)})…", AMBER
+                    )
+                    self._chat_append("system", f"Recibiendo archivo: {name}")
+                elif kind == "file_recv_progress":
+                    name, percent = self._split_payload(payload)
+                    self._set_file_status(
+                        f"Recibiendo {name}: {percent}%", AMBER
+                    )
+                elif kind == "file_recv_done":
+                    self._set_file_status(f"Recibido en {payload}", GREEN)
+                    self._chat_append("system", f"Archivo recibido: {payload}")
+                elif kind == "file_recv_error":
+                    self._set_file_status(f"Error al recibir: {payload}", RED)
+                    self._chat_append("error", f"Error al recibir: {payload}")
         except queue.Empty:
             pass
+
+    @staticmethod
+    def _split_payload(payload: str) -> tuple[str, str]:
+        parts = payload.split("\t", 1)
+        if len(parts) == 2:
+            return parts[0], parts[1]
+        return payload, ""
 
     # ------------------------------------------------------------ utilidades
     def _set_client_status(self, message: str, color: str = MUTED) -> None:
