@@ -221,46 +221,94 @@ def unique_path(directory: str, name: str) -> str:
     return candidate
 
 
-def pick_file_with_gtk(initial_dir: str | None = None) -> str | None:
-    """Abre el selector de archivos de GTK 3 y devuelve la ruta elegida."""
-    try:
-        import gi
+GTK_PICKER_SCRIPT = r"""
+import os
+import sys
 
-        gi.require_version("Gtk", "3.0")
-        from gi.repository import Gtk
-    except (ImportError, ValueError) as exc:
+try:
+    import gi
+
+    gi.require_version("Gtk", "3.0")
+    from gi.repository import Gtk
+except Exception:
+    sys.exit(11)
+
+title = sys.argv[1] if len(sys.argv) > 1 else "Seleccionar archivo"
+initial_dir = sys.argv[2] if len(sys.argv) > 2 else ""
+
+try:
+    initialized, _argv = Gtk.init_check([])
+except Exception:
+    initialized = False
+if not initialized:
+    sys.exit(11)
+
+dialog = Gtk.FileChooserDialog(
+    title=title, action=Gtk.FileChooserAction.OPEN
+)
+dialog.add_buttons(
+    "Cancelar",
+    Gtk.ResponseType.CANCEL,
+    "Enviar",
+    Gtk.ResponseType.OK,
+)
+dialog.set_modal(True)
+dialog.set_default_response(Gtk.ResponseType.OK)
+if initial_dir and os.path.isdir(initial_dir):
+    try:
+        dialog.set_current_folder(initial_dir)
+    except Exception:
+        pass
+
+response = dialog.run()
+path = dialog.get_filename() if response == Gtk.ResponseType.OK else None
+dialog.destroy()
+
+if path:
+    sys.stdout.write(path)
+    sys.exit(0)
+sys.exit(10)
+"""
+
+
+def pick_file_with_gtk(
+    initial_dir: str | None = None,
+    register=None,
+) -> str | None:
+    """Abre el selector de GTK en un proceso aparte para no bloquear tkinter."""
+    interpreter = sys.executable or shutil.which("python3") or "python3"
+    command = [
+        interpreter,
+        "-c",
+        GTK_PICKER_SCRIPT,
+        "Seleccionar archivo para enviar",
+        initial_dir or "",
+    ]
+    try:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except OSError as exc:
         raise GtkUnavailable(str(exc)) from exc
 
+    if callable(register):
+        register(process)
     try:
-        initialized, _argv = Gtk.init_check([])
-    except TypeError:  # pragma: no cover - variantes antiguas de PyGObject
-        initialized = True
-    if not initialized:
-        raise GtkUnavailable("GTK no pudo inicializarse")
-
-    dialog = Gtk.FileChooserDialog(
-        title="Seleccionar archivo para enviar",
-        action=Gtk.FileChooserAction.OPEN,
-    )
-    dialog.add_buttons(
-        "Cancelar",
-        Gtk.ResponseType.CANCEL,
-        "Enviar",
-        Gtk.ResponseType.OK,
-    )
-    dialog.set_modal(True)
-    if initial_dir and os.path.isdir(initial_dir):
-        try:
-            dialog.set_current_folder(initial_dir)
-        except Exception:
-            pass
-    try:
-        response = dialog.run()
-        if response == Gtk.ResponseType.OK:
-            return dialog.get_filename()
-        return None
+        stdout, stderr = process.communicate()
     finally:
-        dialog.destroy()
+        if callable(register):
+            register(None)
+
+    if process.returncode == 0:
+        path = (stdout or "").strip()
+        return path or None
+    if process.returncode == 10:
+        return None
+    detail = (stderr or "").strip().splitlines()
+    raise GtkUnavailable(detail[-1] if detail else "GTK no disponible")
 
 
 class TcpChat:
@@ -735,6 +783,8 @@ class WayViewerPanel:
         self.chat_events: queue.Queue[tuple[str, str]] = queue.Queue()
         self.chat_connected = False
         self.chat_connecting = False
+        self.picking_file = False
+        self.picker_proc: subprocess.Popen | None = None
         self.closing = False
         self.socket_path = default_socket_path()
         self.interfaces: list[tuple[str, str]] = []
@@ -1555,19 +1605,31 @@ class WayViewerPanel:
             self.file_status.configure(text=message, fg=color)
 
     def _pick_and_send_file(self) -> None:
-        if not self.chat_connected:
+        if not self.chat_connected or self.picking_file:
             return
-        try:
-            path = pick_file_with_gtk(ensure_file_dir())
-        except GtkUnavailable:
-            from tkinter import filedialog
+        self.picking_file = True
+        self.file_btn.configure(state="disabled")
+        self._set_file_status("Abriendo selector de archivos…", AMBER)
+        threading.Thread(
+            target=self._pick_file_worker, name="file-picker", daemon=True
+        ).start()
 
-            path = filedialog.askopenfilename(
-                parent=self.root,
-                title="Seleccionar archivo para enviar",
-                initialdir=ensure_file_dir(),
+    def _pick_file_worker(self) -> None:
+        try:
+            path = pick_file_with_gtk(
+                ensure_file_dir(), register=self._register_picker
             )
+        except GtkUnavailable as exc:
+            self.chat_events.put(("file_pick_error", str(exc)))
+            return
+        self.chat_events.put(("file_pick_done", path or ""))
+
+    def _register_picker(self, process: subprocess.Popen | None) -> None:
+        self.picker_proc = process
+
+    def _handle_selected_file(self, path: str) -> None:
         if not path:
+            self._set_file_status(f"Se guardan en {FILE_DIR}")
             return
         if not os.path.isfile(path):
             messagebox.showerror(
@@ -1575,6 +1637,9 @@ class WayViewerPanel:
                 f"No se encontró el archivo:\n{path}",
                 parent=self.root,
             )
+            return
+        if not self.chat_connected:
+            self._set_file_status(f"Se guardan en {FILE_DIR}")
             return
         if not self.chat.send_file(path):
             self._set_file_status(
@@ -1584,6 +1649,16 @@ class WayViewerPanel:
         self._set_file_status(
             f"Preparando envío de {os.path.basename(path)}…", AMBER
         )
+
+    def _fallback_file_dialog(self) -> None:
+        from tkinter import filedialog
+
+        path = filedialog.askopenfilename(
+            parent=self.root,
+            title="Seleccionar archivo para enviar",
+            initialdir=ensure_file_dir(),
+        )
+        self._handle_selected_file(path)
 
     def _chat_append(self, kind: str, text: str) -> None:
         if not hasattr(self, "chat_log"):
@@ -1637,6 +1712,26 @@ class WayViewerPanel:
                     self._chat_append("incoming", payload)
                 elif kind == "chat_system":
                     self._chat_append("system", payload)
+                elif kind == "file_pick_done":
+                    self.picking_file = False
+                    self.file_btn.configure(
+                        state="normal" if self.chat_connected else "disabled"
+                    )
+                    if payload:
+                        self._handle_selected_file(payload)
+                    else:
+                        self._set_file_status(f"Se guardan en {FILE_DIR}")
+                elif kind == "file_pick_error":
+                    self.picking_file = False
+                    if self.chat_connected:
+                        self.file_btn.configure(state="normal")
+                        self._set_file_status(
+                            "Selector GTK no disponible; usando el de tkinter…",
+                            AMBER,
+                        )
+                        self._fallback_file_dialog()
+                    else:
+                        self._set_file_status(f"Se guardan en {FILE_DIR}")
                 elif kind == "file_send_start":
                     name, size_text = self._split_payload(payload)
                     self._set_file_status(
@@ -2154,6 +2249,11 @@ class WayViewerPanel:
         self.stop_requested.set()
         self._terminate_ffplay()
         self.chat.stop()
+        if self.picker_proc is not None:
+            try:
+                self.picker_proc.terminate()
+            except OSError:
+                pass
         self._terminate_all(grace=1.2)
         self.root.destroy()
 
