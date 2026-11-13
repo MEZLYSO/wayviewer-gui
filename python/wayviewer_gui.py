@@ -39,6 +39,10 @@ except ModuleNotFoundError:  # pragma: no cover - depende del sistema
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RELAY_SCRIPT = os.path.join(ROOT, "python", "wayviewer_relay.py")
+try:
+    CHAT_PORT = int(os.environ.get("WAYVIEWER_CHAT_PORT", "9500"))
+except ValueError:
+    CHAT_PORT = 9500
 
 # Paleta oscura.
 BG = "#0f1115"
@@ -167,6 +171,221 @@ class Cancelled(Exception):
     """El usuario pidió detener mientras se iniciaba."""
 
 
+class TcpChat:
+    """Chat TCP mínimo: escucha en un puerto y permite una conexión a la vez."""
+
+    def __init__(self, port: int, events: queue.Queue[tuple[str, str]]):
+        self.port = port
+        self.events = events
+        self.lock = threading.Lock()
+        self.stop_event = threading.Event()
+        self.sock: socket.socket | None = None
+        self.server: socket.socket | None = None
+        self.listener_thread: threading.Thread | None = None
+        self.reader_thread: threading.Thread | None = None
+        self.connecting = False
+        self._start_server()
+
+    @property
+    def connected(self) -> bool:
+        with self.lock:
+            return self.sock is not None
+
+    def _start_server(self) -> None:
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            server.bind(("0.0.0.0", self.port))
+            server.listen(4)
+            server.settimeout(0.5)
+        except OSError as exc:
+            server.close()
+            self.events.put(
+                (
+                    "chat_system",
+                    f"Servidor de chat no disponible en el puerto {self.port}: "
+                    f"{exc}. Aun así puedes conectar a otro equipo.",
+                )
+            )
+            return
+        self.server = server
+        self.listener_thread = threading.Thread(
+            target=self._accept_loop, name="chat-server", daemon=True
+        )
+        self.listener_thread.start()
+
+    def _accept_loop(self) -> None:
+        server = self.server
+        if server is None:
+            return
+        while not self.stop_event.is_set():
+            try:
+                conn, address = server.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            conn.settimeout(None)
+            peer = f"{address[0]}:{address[1]}"
+            if not self._adopt(conn, peer):
+                try:
+                    conn.sendall("Servidor de chat ocupado.\n".encode("utf-8"))
+                except OSError:
+                    pass
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+
+    def _adopt(self, conn: socket.socket, peer: str) -> bool:
+        with self.lock:
+            if self.stop_event.is_set() or self.sock is not None or self.connecting:
+                return False
+            self.sock = conn
+        self.events.put(("chat_connected", f"Conexión entrante de {peer}"))
+        self._start_reader(conn)
+        return True
+
+    def connect(self, host: str) -> bool:
+        with self.lock:
+            if self.stop_event.is_set() or self.sock is not None or self.connecting:
+                return False
+            self.connecting = True
+        threading.Thread(
+            target=self._connect_worker,
+            args=(host,),
+            name="chat-connect",
+            daemon=True,
+        ).start()
+        return True
+
+    def _connect_worker(self, host: str) -> None:
+        try:
+            conn = socket.create_connection((host, self.port), timeout=5.0)
+            conn.settimeout(None)
+        except OSError as exc:
+            with self.lock:
+                self.connecting = False
+            self.events.put(
+                (
+                    "chat_error",
+                    f"No se pudo conectar el chat a {host}:{self.port}: {exc}",
+                )
+            )
+            return
+
+        with self.lock:
+            self.connecting = False
+            if self.stop_event.is_set() or self.sock is not None:
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+                self.events.put(
+                    ("chat_system", "Ya hay una conexión de chat activa.")
+                )
+                return
+            self.sock = conn
+        self.events.put(("chat_connected", f"Chat conectado a {host}:{self.port}"))
+        self._start_reader(conn)
+
+    def _start_reader(self, conn: socket.socket) -> None:
+        self.reader_thread = threading.Thread(
+            target=self._read_loop,
+            args=(conn,),
+            name="chat-reader",
+            daemon=True,
+        )
+        self.reader_thread.start()
+
+    def _read_loop(self, conn: socket.socket) -> None:
+        try:
+            reader = conn.makefile(
+                "r", encoding="utf-8", errors="replace", newline="\n"
+            )
+        except OSError:
+            self._drop(conn, "No se pudo leer el chat.")
+            return
+
+        reason = "El otro equipo cerró el chat."
+        try:
+            for line in reader:
+                if self.stop_event.is_set():
+                    return
+                text = line.rstrip("\r\n")
+                if text:
+                    self.events.put(("chat_incoming", text[:4000]))
+        except OSError:
+            reason = "Conexión de chat interrumpida."
+        finally:
+            try:
+                reader.close()
+            except OSError:
+                pass
+
+        if self.stop_event.is_set():
+            self._clear(conn)
+        else:
+            self._drop(conn, reason)
+
+    def send(self, text: str) -> bool:
+        with self.lock:
+            conn = self.sock
+        if conn is None:
+            return False
+        try:
+            conn.sendall((text + "\n").encode("utf-8"))
+        except OSError as exc:
+            self._drop(conn, f"Error al enviar: {exc}")
+            return False
+        return True
+
+    def _clear(self, conn: socket.socket) -> bool:
+        with self.lock:
+            if self.sock is not conn:
+                return False
+            self.sock = None
+        try:
+            conn.close()
+        except OSError:
+            pass
+        return True
+
+    def _drop(self, conn: socket.socket, reason: str) -> None:
+        if self._clear(conn):
+            self.events.put(("chat_disconnected", reason))
+
+    def disconnect(self) -> None:
+        with self.lock:
+            conn = self.sock
+            self.sock = None
+            self.connecting = False
+        if conn is None:
+            return
+        try:
+            conn.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            conn.close()
+        except OSError:
+            pass
+        self.events.put(("chat_disconnected", "Chat desconectado."))
+
+    def stop(self) -> None:
+        self.stop_event.set()
+        self.disconnect()
+        if self.server is not None:
+            try:
+                self.server.close()
+            except OSError:
+                pass
+            self.server = None
+        for thread in (self.listener_thread, self.reader_thread):
+            if thread is not None and thread.is_alive():
+                thread.join(timeout=0.5)
+
+
 class WayViewerPanel:
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -185,6 +404,9 @@ class WayViewerPanel:
             "ffplay": deque(maxlen=12),
         }
         self.event_queue: queue.Queue[tuple[str, str]] = queue.Queue()
+        self.chat_events: queue.Queue[tuple[str, str]] = queue.Queue()
+        self.chat_connected = False
+        self.chat_connecting = False
         self.closing = False
         self.socket_path = default_socket_path()
         self.interfaces: list[tuple[str, str]] = []
@@ -207,10 +429,13 @@ class WayViewerPanel:
         self.var_low_delay = tk.BooleanVar(value=True)
         self.var_framedrop = tk.BooleanVar(value=True)
         self.var_tlpktdrop = tk.BooleanVar(value=True)
+        self.var_chat_message = tk.StringVar(value="")
 
         self._configure_window()
         self._build_header()
         self._build_body()
+        self.chat = TcpChat(CHAT_PORT, self.chat_events)
+        self._apply_chat_state(False)
         self._refresh_interfaces(force=True)
         self._apply_state("stopped")
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -223,7 +448,7 @@ class WayViewerPanel:
         self.root.title("WayViewer · Panel de transmisión")
         self.root.configure(bg=BG)
         self.root.minsize(860, 560)
-        width, height = 980, 660
+        width, height = 980, 800
         screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()
         x = max(0, (screen_w - width) // 2)
@@ -298,6 +523,8 @@ class WayViewerPanel:
             bg="#0b0e13",
             fg=FG,
             insertbackground=FG,
+            disabledbackground="#0b0e13",
+            disabledforeground=MUTED,
             relief="flat",
             highlightthickness=1,
             highlightbackground=BORDER,
@@ -305,9 +532,67 @@ class WayViewerPanel:
             font=MONO,
         )
 
+    def _sync_scroll_region(self, _event: object = None) -> None:
+        if not hasattr(self, "body_canvas"):
+            return
+        region = self.body_canvas.bbox("all")
+        if region is not None:
+            self.body_canvas.configure(scrollregion=region)
+
+    def _on_body_wheel(self, event: tk.Event) -> None:
+        if not hasattr(self, "body_canvas"):
+            return
+        widget = self.root.winfo_containing(event.x_root, event.y_root)
+        while widget is not None:
+            if getattr(self, "chat_log", None) is widget:
+                return
+            widget = getattr(widget, "master", None)
+        if getattr(event, "num", None) == 4:
+            step = -1
+        elif getattr(event, "num", None) == 5:
+            step = 1
+        else:
+            step = -1 if getattr(event, "delta", 0) > 0 else 1
+        self.body_canvas.yview_scroll(step, "units")
+
     def _build_body(self) -> None:
-        body = tk.Frame(self.root, bg=BG)
-        body.pack(fill="both", expand=True, padx=18, pady=14)
+        container = tk.Frame(self.root, bg=BG)
+        container.pack(fill="both", expand=True)
+
+        self.body_canvas = tk.Canvas(
+            container, bg=BG, highlightthickness=0, bd=0
+        )
+        self.body_scroll = tk.Scrollbar(
+            container,
+            orient="vertical",
+            command=self.body_canvas.yview,
+            bg=PANEL,
+            troughcolor=BG,
+            activebackground=BORDER,
+            relief="flat",
+            width=12,
+        )
+        self.body_canvas.configure(yscrollcommand=self.body_scroll.set)
+        self.body_scroll.pack(side="right", fill="y")
+        self.body_canvas.pack(side="left", fill="both", expand=True)
+
+        holder = tk.Frame(self.body_canvas, bg=BG)
+        self.body_window = self.body_canvas.create_window(
+            (0, 0), window=holder, anchor="nw"
+        )
+        holder.bind("<Configure>", self._sync_scroll_region)
+        self.body_canvas.bind(
+            "<Configure>",
+            lambda event: self.body_canvas.itemconfigure(
+                self.body_window, width=event.width
+            ),
+        )
+        self.root.bind_all("<MouseWheel>", self._on_body_wheel)
+        self.root.bind_all("<Button-4>", self._on_body_wheel)
+        self.root.bind_all("<Button-5>", self._on_body_wheel)
+
+        body = tk.Frame(holder, bg=BG)
+        body.pack(fill="both", expand=True, padx=14, pady=12)
 
         # --- Sección Transmitir imagen ------------------------------------
         tx_card, tx = self._make_card(body, "Transmitir imagen")
@@ -375,15 +660,16 @@ class WayViewerPanel:
 
         # --- Sección Conectar ---------------------------------------------
         cx_card, cx = self._make_card(body, "Conectar")
-        cx_card.pack(fill="x", pady=(14, 0))
+        cx_card.pack(fill="both", expand=True, pady=(14, 0))
 
         client_grid = tk.Frame(cx, bg=PANEL)
         client_grid.pack(fill="x", pady=(10, 0))
 
         ip_cell = self._field_cell(client_grid, 0, "IP de destino")
-        self._dark_entry(ip_cell, self.var_client_ip, 20).pack(
-            anchor="w", pady=(4, 0), ipady=3
+        self.client_ip_entry = self._dark_entry(
+            ip_cell, self.var_client_ip, 20
         )
+        self.client_ip_entry.pack(anchor="w", pady=(4, 0), ipady=3)
 
         port_cell = self._field_cell(client_grid, 1, "Puerto SRT")
         self._dark_entry(port_cell, self.var_srt_port, 9).pack(
@@ -453,6 +739,93 @@ class WayViewerPanel:
             wraplength=520,
         )
         self.client_status.pack(side="left", padx=(14, 0))
+
+        # --- Chat TCP -----------------------------------------------------
+        tk.Frame(cx, bg=BORDER, height=1).pack(fill="x", pady=(12, 0))
+        chat_head = tk.Frame(cx, bg=PANEL)
+        chat_head.pack(fill="x", pady=(10, 0))
+        tk.Label(
+            chat_head,
+            text=f"Chat TCP · puerto {CHAT_PORT}",
+            bg=PANEL,
+            fg=FG,
+            font=("DejaVu Sans", 9, "bold"),
+        ).pack(side="left")
+        self.chat_btn = tk.Button(
+            chat_head,
+            text="Conectar chat",
+            command=self._toggle_chat,
+            bg=ACCENT,
+            fg="#ffffff",
+            activebackground="#1f6feb",
+            activeforeground="#ffffff",
+            disabledforeground="#6e7681",
+            relief="flat",
+            padx=12,
+            pady=4,
+            cursor="hand2",
+            font=("DejaVu Sans", 9, "bold"),
+        )
+        self.chat_btn.pack(side="right")
+
+        chat_box = tk.Frame(
+            cx, bg="#0b0e13", highlightthickness=1, highlightbackground=BORDER
+        )
+        chat_box.pack(fill="both", expand=True, pady=(6, 0))
+        chat_scroll = tk.Scrollbar(
+            chat_box,
+            bg=PANEL,
+            troughcolor="#0b0e13",
+            activebackground=BORDER,
+            relief="flat",
+            width=12,
+        )
+        chat_scroll.pack(side="right", fill="y")
+        self.chat_log = tk.Text(
+            chat_box,
+            bg="#0b0e13",
+            fg="#c9d1d9",
+            insertbackground=FG,
+            selectbackground=ACCENT,
+            relief="flat",
+            wrap="word",
+            height=6,
+            font=MONO_SMALL,
+            padx=10,
+            pady=8,
+            yscrollcommand=chat_scroll.set,
+            state="disabled",
+        )
+        self.chat_log.pack(side="left", fill="both", expand=True)
+        chat_scroll.configure(command=self.chat_log.yview)
+        self.chat_log.tag_configure("incoming", foreground=FG)
+        self.chat_log.tag_configure("outgoing", foreground=ACCENT)
+        self.chat_log.tag_configure("system", foreground=MUTED)
+        self.chat_log.tag_configure("error", foreground=RED)
+
+        message_row = tk.Frame(cx, bg=PANEL)
+        message_row.pack(fill="x", pady=(8, 0))
+        self.chat_entry = self._dark_entry(
+            message_row, self.var_chat_message, 40
+        )
+        self.chat_entry.pack(side="left", fill="x", expand=True, ipady=3)
+        self.chat_entry.bind("<Return>", self._send_chat)
+        self.chat_send_btn = tk.Button(
+            message_row,
+            text="Enviar",
+            command=self._send_chat,
+            bg=CHIP,
+            fg=FG,
+            activebackground=BORDER,
+            activeforeground=FG,
+            disabledforeground="#6e7681",
+            relief="flat",
+            padx=14,
+            pady=5,
+            cursor="hand2",
+            font=("DejaVu Sans", 9, "bold"),
+        )
+        self.chat_send_btn.pack(side="left", padx=(8, 0))
 
     # ------------------------------------------------------- interfaz de red
     def _refresh_interfaces(self, force: bool = False) -> None:
@@ -719,6 +1092,155 @@ class WayViewerPanel:
                 proc.wait(timeout=1.0)
             except subprocess.TimeoutExpired:
                 pass
+
+    # ----------------------------------------------------------------- chat
+    def _toggle_chat(self) -> None:
+        if self.chat_connected:
+            self.chat.disconnect()
+            self.chat_btn.configure(
+                text="Desconectando…",
+                bg=AMBER,
+                fg="#1f1600",
+                state="disabled",
+            )
+            return
+        if self.chat_connecting:
+            return
+
+        ip_text = self.var_client_ip.get().strip()
+        if not ip_text:
+            messagebox.showerror(
+                "IP de destino",
+                "Escribe la IP de destino para conectar el chat.",
+                parent=self.root,
+            )
+            return
+        if any(char.isspace() for char in ip_text):
+            messagebox.showerror(
+                "IP de destino",
+                "La IP de destino no puede contener espacios.",
+                parent=self.root,
+            )
+            return
+
+        if not self.chat.connect(ip_text):
+            self._chat_append("error", "El chat ya está conectado o conectándose.")
+            return
+
+        self.chat_connecting = True
+        self.client_ip_entry.configure(state="disabled")
+        self.chat_btn.configure(
+            text="Conectando…",
+            bg=AMBER,
+            fg="#1f1600",
+            state="disabled",
+        )
+        self.chat_entry.configure(state="disabled")
+        self.chat_send_btn.configure(state="disabled")
+        self._chat_append(
+            "system", f"Conectando chat a {ip_text}:{CHAT_PORT}…"
+        )
+
+    def _apply_chat_state(self, connected: bool) -> None:
+        self.chat_connected = connected
+        if connected:
+            self.chat_connecting = False
+            self.client_ip_entry.configure(state="disabled")
+            self.chat_btn.configure(
+                text="Desconectar chat",
+                bg=RED,
+                fg="#ffffff",
+                activebackground="#da3633",
+                state="normal",
+            )
+            self.chat_entry.configure(state="normal")
+            self.chat_send_btn.configure(state="normal")
+            self.chat_entry.focus_set()
+        else:
+            self.client_ip_entry.configure(state="normal")
+            self.chat_btn.configure(
+                text="Conectar chat",
+                bg=ACCENT,
+                fg="#ffffff",
+                activebackground="#1f6feb",
+                state="normal",
+            )
+            self.chat_entry.configure(state="disabled")
+            self.chat_send_btn.configure(state="disabled")
+            self.var_chat_message.set("")
+
+    def _send_chat(self, _event: object = None) -> str:
+        if not self.chat_connected:
+            return "break"
+        text = self.var_chat_message.get().strip()
+        if not text:
+            return "break"
+        if self.chat.send(text):
+            self._chat_append("outgoing", text)
+            self.var_chat_message.set("")
+        else:
+            self.chat_connected = False
+            self.chat_connecting = False
+            self._apply_chat_state(False)
+            self._chat_append(
+                "error", "No se pudo enviar el mensaje: chat desconectado."
+            )
+        return "break"
+
+    def _chat_append(self, kind: str, text: str) -> None:
+        if not hasattr(self, "chat_log"):
+            return
+        stamp = time.strftime("%H:%M")
+        if kind == "outgoing":
+            line = f"[{stamp}] Tú: {text}\n"
+            tag = "outgoing"
+        elif kind == "incoming":
+            line = f"[{stamp}] Remoto: {text}\n"
+            tag = "incoming"
+        elif kind == "error":
+            line = f"[{stamp}] {text}\n"
+            tag = "error"
+        else:
+            line = f"[{stamp}] {text}\n"
+            tag = "system"
+
+        self.chat_log.configure(state="normal")
+        self.chat_log.insert("end", line, tag)
+        self.chat_log.configure(state="disabled")
+        self.chat_log.see("end")
+
+        try:
+            total = int(self.chat_log.index("end-1c").split(".", 1)[0])
+        except (tk.TclError, ValueError):
+            return
+        if total > 1200:
+            self.chat_log.configure(state="normal")
+            self.chat_log.delete("1.0", f"{total - 1000}.0")
+            self.chat_log.configure(state="disabled")
+
+    def _drain_chat_events(self) -> None:
+        try:
+            while True:
+                kind, payload = self.chat_events.get_nowait()
+                if kind == "chat_connected":
+                    self.chat_connecting = False
+                    self._apply_chat_state(True)
+                    self._chat_append("system", payload)
+                elif kind == "chat_disconnected":
+                    self.chat_connecting = False
+                    self._apply_chat_state(False)
+                    self._chat_append("system", payload)
+                elif kind == "chat_error":
+                    self.chat_connecting = False
+                    if not self.chat_connected:
+                        self._apply_chat_state(False)
+                    self._chat_append("error", payload)
+                elif kind == "chat_incoming":
+                    self._chat_append("incoming", payload)
+                elif kind == "chat_system":
+                    self._chat_append("system", payload)
+        except queue.Empty:
+            pass
 
     # ------------------------------------------------------------ utilidades
     def _set_client_status(self, message: str, color: str = MUTED) -> None:
@@ -1172,22 +1694,27 @@ class WayViewerPanel:
                         "Error de conexión", message, parent=self.root
                     )
 
+        self._drain_chat_events()
         self.root.after(100, self._poll)
 
     def _on_close(self) -> None:
-        if self.state in ("running", "starting", "stopping") or (
-            self.ffplay_proc is not None
+        if (
+            self.state in ("running", "starting", "stopping")
+            or self.ffplay_proc is not None
+            or self.chat_connected
+            or self.chat_connecting
         ):
             if not messagebox.askokcancel(
                 "Salir",
-                "Hay una transmisión o reproducción activa. "
-                "¿Detenerla y salir?",
+                "Hay una transmisión, reproducción o chat activo. "
+                "¿Detenerlo y salir?",
                 parent=self.root,
             ):
                 return
         self.closing = True
         self.stop_requested.set()
         self._terminate_ffplay()
+        self.chat.stop()
         self._terminate_all(grace=1.2)
         self.root.destroy()
 
