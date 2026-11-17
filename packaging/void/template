@@ -1,0 +1,41 @@
+# Maintainer: <tu-nombre> <tu-email>
+pkgname=wayviewer
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Transmisión de pantalla Wayland por SRT con chat y transferencia de archivos"
+arch=('x86_64')
+url="https://github.com/<usuario>/app_monitoreo"
+license=('custom')
+depends=('python' 'tk' 'ffmpeg' 'srt' 'wayland' 'mesa' 'libdrm' 'gtk3')
+makedepends=('git' 'gcc' 'cmake' 'make' 'pkgconf')
+source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/v${pkgver}.tar.gz")
+sha256sums=('SKIP')
+
+# Nota: este repo no incluye el código fuente del binario C++ de wayviewer.
+# Si compilas el binario aparte, colócalo en build/wayviewer antes de empaquetar
+# o define WAYVIEWER_BIN.
+
+build() {
+    cd "${srcdir}/app_monitoreo-${pkgver}"
+    # Compila aquí tu binario wayviewer (fuente externa) y déjalo en build/wayviewer
+    # Ejemplo genérico:
+    # cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+    # cmake --build build -j"$(nproc)"
+    :
+}
+
+package() {
+    cd "${srcdir}/app_monitoreo-${pkgver}"
+    install -d "${pkgdir}/opt/wayviewer"
+    cp -a . "${pkgdir}/opt/wayviewer/"
+    if [[ -x "${srcdir}/app_monitoreo-${pkgver}/build/wayviewer" ]]; then
+        install -Dm755 "${srcdir}/app_monitoreo-${pkgver}/build/wayviewer" \
+            "${pkgdir}/usr/bin/wayviewer"
+    fi
+    install -Dm755 /dev/stdin "${pkgdir}/usr/bin/wayviewer-gui" <<'EOF'
+#!/usr/bin/env bash
+export PYTHONPATH=/opt/wayviewer/python
+exec python3 /opt/wayviewer/python/wayviewer_gui.py "$@"
+EOF
+}
+" path="/home/maury/git/app_monitoreo/packaging/aur/PKGBUILD

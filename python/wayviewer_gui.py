@@ -991,7 +991,6 @@ class WayViewerPanel:
         self.layout_mode = mode
         self._arrange_cards()
         self._arrange_client_fields()
-        self._arrange_options()
         self._arrange_footer()
         self._arrange_file_row()
         self._arrange_header()
@@ -1000,9 +999,6 @@ class WayViewerPanel:
 
         self.status_detail.configure(
             wraplength=240 if mode == "narrow" else 300
-        )
-        self.socket_label.configure(
-            wraplength=220 if mode == "narrow" else 292
         )
         self.client_ip_entry.configure(
             width=13 if mode == "narrow" else 18
@@ -1042,13 +1038,6 @@ class WayViewerPanel:
         )
         for cell, (row, column) in zip(cells, positions):
             cell.grid_configure(row=row, column=column)
-
-    def _arrange_options(self) -> None:
-        per_row = 2 if self.layout_mode == "narrow" else 4
-        for index, button in enumerate(self.option_buttons):
-            button.grid_configure(
-                row=1 + index // per_row, column=index % per_row
-            )
 
     def _arrange_footer(self) -> None:
         footer = self.footer
@@ -1170,22 +1159,8 @@ class WayViewerPanel:
         self.tx_card = tx_card
         tx_card.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
 
-        host_row = tk.Frame(tx, bg=PANEL)
-        host_row.pack(fill="x", pady=(10, 0))
-        tk.Label(
-            host_row, text="HOST", bg=PANEL, fg=MUTED,
-            font=("DejaVu Sans", 8, "bold"),
-        ).pack(side="left")
-        tk.Label(
-            host_row, text="0.0.0.0", bg=PANEL, fg=GREEN, font=MONO,
-        ).pack(side="left", padx=(10, 0))
-        tk.Label(
-            host_row, text="· todas las interfaces", bg=PANEL, fg=MUTED,
-            font=("DejaVu Sans", 8),
-        ).pack(side="left", padx=(8, 0))
-
         grid = tk.Frame(tx, bg=PANEL)
-        grid.pack(fill="x", pady=(8, 0))
+        grid.pack(fill="x", pady=(10, 0))
         fields = [
             ("Puerto wayviewer", self.var_port, 9, 0, 0),
             ("Puerto SRT", self.var_srt_port, 9, 0, 1),
@@ -1196,26 +1171,6 @@ class WayViewerPanel:
             self._dark_entry(cell, variable, width).pack(
                 anchor="w", pady=(4, 0), ipady=3
             )
-
-        socket_box = tk.Frame(
-            tx, bg="#0b0e13", highlightthickness=1, highlightbackground=BORDER
-        )
-        socket_box.pack(fill="x", pady=(4, 0))
-        tk.Label(
-            socket_box, text="SOCKET UNIX", bg="#0b0e13", fg=MUTED,
-            font=("DejaVu Sans", 8, "bold"),
-        ).pack(anchor="w", padx=10, pady=(7, 0))
-        self.socket_label = tk.Label(
-            socket_box,
-            text=self.socket_path,
-            bg="#0b0e13",
-            fg=FG,
-            font=MONO_SMALL,
-            anchor="w",
-            justify="left",
-            wraplength=292,
-        )
-        self.socket_label.pack(fill="x", padx=10, pady=(2, 8))
 
         self.action_btn = tk.Button(
             tx,
@@ -1284,39 +1239,7 @@ class WayViewerPanel:
             anchor="w", pady=(4, 0), ipady=3
         )
 
-        options = tk.Frame(cx, bg=PANEL)
-        self.options_frame = options
-        options.pack(fill="x", pady=(0, 2))
-        tk.Label(
-            options, text="OPCIONES", bg=PANEL, fg=MUTED,
-            font=("DejaVu Sans", 8, "bold"),
-        ).grid(row=0, column=0, sticky="w", pady=(0, 4))
-
         self.option_buttons = []
-        for index, (label, variable) in enumerate(
-            (
-                ("nobuffer", self.var_nobuffer),
-                ("low_delay", self.var_low_delay),
-                ("framedrop", self.var_framedrop),
-                ("tlpktdrop", self.var_tlpktdrop),
-            )
-        ):
-            button = tk.Checkbutton(
-                options,
-                text=label,
-                variable=variable,
-                bg=PANEL,
-                fg=FG,
-                selectcolor="#0b0e13",
-                activebackground=PANEL,
-                activeforeground=FG,
-                highlightthickness=0,
-                bd=0,
-                cursor="hand2",
-                font=("DejaVu Sans", 9),
-            )
-            button.grid(row=1, column=index, sticky="w", padx=(0, 12))
-            self.option_buttons.append(button)
 
         footer = tk.Frame(cx, bg=PANEL)
         self.footer = footer
@@ -1363,13 +1286,6 @@ class WayViewerPanel:
         tk.Label(
             chat_titles, text="CHAT Y ARCHIVOS", bg=PANEL, fg=MUTED,
             font=("DejaVu Sans", 8, "bold"),
-        ).pack(anchor="w")
-        tk.Label(
-            chat_titles,
-            text=f"TCP · puerto {CHAT_PORT}",
-            bg=PANEL,
-            fg=FG,
-            font=("DejaVu Sans", 10, "bold"),
         ).pack(anchor="w")
         self.chat_btn = tk.Button(
             chat_head,
@@ -1948,6 +1864,11 @@ class WayViewerPanel:
                 kind, payload = self.chat_events.get_nowait()
                 if kind == "chat_connected":
                     self.chat_connecting = False
+                    if payload.startswith("Conexión entrante de "):
+                        peer = payload.split("Conexión entrante de ", 1)[1].strip()
+                        ip_text = peer.rsplit(":", 1)[0]
+                        if ip_text:
+                            self.var_client_ip.set(ip_text)
                     self._apply_chat_state(True)
                     self._chat_append("system", payload)
                 elif kind == "chat_disconnected":
