@@ -867,6 +867,13 @@ def main(argv=None):
     def handle_signal(signum, _frame):
         LOG.info("received signal %d, stopping", signum)
         relay.stop_event.set()
+        # Cierra el listener para desbloquear accept() y acelerar la salida.
+        listener = relay.listener
+        if listener >= 0:
+            try:
+                relay.srt.close_socket(listener)
+            except Exception:  # noqa: BLE001 - nunca fallar en un handler
+                pass
 
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)

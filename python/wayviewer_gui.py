@@ -290,6 +290,7 @@ def pick_file_with_gtk(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            start_new_session=True,
         )
     except OSError as exc:
         raise GtkUnavailable(str(exc)) from exc
@@ -755,10 +756,8 @@ class TcpChat:
             except OSError:
                 pass
             self.server = None
-        threads = [self.listener_thread, self.reader_thread, *self.send_threads]
-        for thread in threads:
-            if thread is not None and thread.is_alive():
-                thread.join(timeout=0.5)
+        # Los hilos son daemon y los sockets ya están cerrados. No bloqueamos
+        # el cierre de la GUI esperando a que terminen.
         self._abort_all_incoming()
 
 
@@ -786,6 +785,8 @@ class WayViewerPanel:
         self.picking_file = False
         self.picker_proc: subprocess.Popen | None = None
         self.closing = False
+        self.shutting_down = False
+        self.shutdown_lock = threading.Lock()
         self.socket_path = default_socket_path()
         self.interfaces: list[tuple[str, str]] = []
         self.chip_signature: tuple[tuple[str, str], ...] = ()
@@ -1660,11 +1661,11 @@ class WayViewerPanel:
             return
         self._signal_process(proc, signal.SIGTERM)
         try:
-            proc.wait(timeout=grace)
+            proc.wait(timeout=max(0.1, grace))
         except subprocess.TimeoutExpired:
             self._signal_process(proc, signal.SIGKILL)
             try:
-                proc.wait(timeout=1.0)
+                proc.wait(timeout=0.5)
             except subprocess.TimeoutExpired:
                 pass
 
@@ -2403,7 +2404,54 @@ class WayViewerPanel:
         self._drain_chat_events()
         self.root.after(100, self._poll)
 
+    def _terminate_picker(self) -> None:
+        proc = self.picker_proc
+        self.picker_proc = None
+        if proc is None:
+            return
+        self._signal_process(proc, signal.SIGTERM)
+        try:
+            proc.wait(timeout=0.4)
+        except subprocess.TimeoutExpired:
+            self._signal_process(proc, signal.SIGKILL)
+            try:
+                proc.wait(timeout=0.3)
+            except subprocess.TimeoutExpired:
+                pass
+
+    def shutdown(self, grace: float = 1.2) -> None:
+        """Detiene hilos y procesos hijos una sola vez, sin bloquear de más."""
+        with self.shutdown_lock:
+            if self.shutting_down:
+                return
+            self.shutting_down = True
+        self.closing = True
+        self.stop_requested.set()
+        self._terminate_ffplay(grace=min(0.6, grace))
+        self.chat.stop()
+        self._terminate_picker()
+        self._terminate_all(grace=grace)
+
+    def install_signal_handlers(self) -> None:
+        def _handler(_signum, _frame):
+            # Salir del mainloop; la limpieza se hace en main() con finally.
+            try:
+                self.root.quit()
+            except tk.TclError:
+                pass
+
+        for name in ("SIGINT", "SIGTERM", "SIGHUP"):
+            sig = getattr(signal, name, None)
+            if sig is None:
+                continue
+            try:
+                signal.signal(sig, _handler)
+            except (ValueError, OSError):
+                pass
+
     def _on_close(self) -> None:
+        if self.shutting_down:
+            return
         if (
             self.state in ("running", "starting", "stopping")
             or self.ffplay_proc is not None
@@ -2417,17 +2465,11 @@ class WayViewerPanel:
                 parent=self.root,
             ):
                 return
-        self.closing = True
-        self.stop_requested.set()
-        self._terminate_ffplay()
-        self.chat.stop()
-        if self.picker_proc is not None:
-            try:
-                self.picker_proc.terminate()
-            except OSError:
-                pass
-        self._terminate_all(grace=1.2)
-        self.root.destroy()
+        self.shutdown(grace=1.2)
+        try:
+            self.root.destroy()
+        except tk.TclError:
+            pass
 
 
 def main() -> int:
@@ -2436,8 +2478,12 @@ def main() -> int:
     except tk.TclError as exc:
         sys.stderr.write(f"No se pudo abrir la ventana tkinter: {exc}\n")
         return 1
-    WayViewerPanel(root)
-    root.mainloop()
+    panel = WayViewerPanel(root)
+    try:
+        panel.install_signal_handlers()
+        root.mainloop()
+    finally:
+        panel.shutdown()
     return 0
 
 
