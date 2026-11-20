@@ -10,7 +10,7 @@ Sección «Conectar»:
   archivos; lo recibido se guarda en ~/wayviewer.
 
 La versión cliente recibe la lista de dominios y las órdenes de entrada
-desde el panel de administración, y aplica el bloqueo mediante /etc/hosts.
+desde el panel de administración, y aplica el bloqueo mediante nftables.
 """
 
 from __future__ import annotations
@@ -1560,8 +1560,8 @@ class WayViewerPanel:
             inner,
             text=(
                 "El panel de administración envía la lista y este equipo la "
-                "aplica mediante /etc/hosts con su helper local. Se bloquea el "
-                "dominio y sus subdominios; el resto de HTTPS sigue "
+                "aplica mediante nftables con su helper local. Se bloquean las "
+                "dominios y sus IPs actuales; el resto de HTTPS sigue "
                 "funcionando. Usa el chat solo en una red de confianza: no "
                 "tiene autenticación."
             ),
@@ -2019,7 +2019,7 @@ class WayViewerPanel:
             ("control_local_done", f"{action}\t{int(ok)}\t{detail}")
         )
 
-    # ------------------------------------------- dominios bloqueados (/etc/hosts)
+    # ------------------------------------------- dominios bloqueados (nftables)
     def _domain_summary(self) -> str:
         if self.domains:
             return f"{len(self.domains)} dominios aplicados."
@@ -2181,7 +2181,7 @@ class WayViewerPanel:
                 elif kind == "password_request":
                     password = simpledialog.askstring(
                         "Permiso de administrador",
-                        "El cliente necesita tu contraseña para actualizar /etc/hosts.",
+                        "El cliente necesita tu contraseña para actualizar nftables.",
                         parent=self.root,
                         show="*",
                     )

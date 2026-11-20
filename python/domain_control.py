@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Lista de dominios bloqueados y cliente del helper de /etc/hosts.
+"""Lista de dominios bloqueados y cliente del helper nftables.
 
 La GUI se ejecuta como el usuario de la sesión y nunca escribe directamente
-en ``/etc/hosts``. Para aplicar la lista invoca con sudo el helper
-``/usr/local/libexec/wayviewer-hosts``, que conserva el resto del archivo.
+en nftables. Para aplicar la lista invoca con sudo el helper
+``/usr/local/libexec/wayviewer-nft``.
 
 El filtro es DNS, no de puertos: se bloquea la resolución del dominio y sus
 subdominios, pero el resto de HTTPS sigue funcionando.
@@ -25,7 +25,7 @@ MAX_DOMAINS = 500
 MAX_DOMAIN_LENGTH = 253
 
 HELPER = os.environ.get(
-    "WAYVIEWER_HOSTS_HELPER", "/usr/local/libexec/wayviewer-hosts"
+    "WAYVIEWER_NFT_HELPER", "/usr/local/libexec/wayviewer-nft"
 )
 REQUEST_TIMEOUT = 60.0
 
@@ -198,15 +198,15 @@ def _request(
         )
     except FileNotFoundError:
         return None, (
-            f"helper de hosts no instalado ({HELPER}); ejecuta "
-            "packaging/install-dns-helper.sh"
+            f"helper nftables no instalado ({HELPER}); ejecuta "
+            "packaging/install-nft-helper.sh"
         )
     except PermissionError:
         return None, f"sin permiso para ejecutar {HELPER}"
     except subprocess.TimeoutExpired:
-        return None, "el helper de hosts no respondió a tiempo"
+        return None, "el helper nftables no respondió a tiempo"
     except OSError as exc:
-        return None, f"no se pudo ejecutar el helper de hosts: {exc}"
+        return None, f"no se pudo ejecutar el helper nftables: {exc}"
 
     response = None
     for line in reversed(result.stdout.splitlines()):
@@ -233,8 +233,8 @@ def _request(
         return None, (
             "sudo no autoriza el helper de hosts"
         )
-    detail = stderr or f"el helper de hosts terminó con código {result.returncode}"
-    return None, f"helper de hosts: {detail}"
+    detail = stderr or f"el helper nftables terminó con código {result.returncode}"
+    return None, f"helper nftables: {detail}"
 
 
 def _result(
@@ -254,7 +254,7 @@ def _result(
             pass
 
     if not response.get("ok"):
-        detail = str(response.get("detail") or "el helper de hosts rechazó la petición")
+        detail = str(response.get("detail") or "el helper nftables rechazó la petición")
         return False, domains, detail
     detail = str(response.get("detail") or f"{len(domains)} dominios")
     return True, domains, detail

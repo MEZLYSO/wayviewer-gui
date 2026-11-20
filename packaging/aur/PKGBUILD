@@ -26,8 +26,8 @@ install -m 0644 "${ROOT}/python/wayviewer_gui.py" "${DEST}/python/"
 install -m 0644 "${ROOT}/python/wayviewer_relay.py" "${DEST}/python/"
 install -m 0644 "${ROOT}/python/sway_control.py" "${DEST}/python/"
 install -m 0644 "${ROOT}/python/domain_control.py" "${DEST}/python/"
-install -m 0644 "${ROOT}/python/wayviewer_dns_helper.py" "${DEST}/python/"
-install -m 0755 "${ROOT}/packaging/install-dns-helper.sh" "${DEST}/"
+install -m 0755 "${ROOT}/python/wayviewer_nft_helper.py" "${DEST}/python/"
+install -m 0755 "${ROOT}/packaging/install-nft-helper.sh" "${DEST}/"
 install -m 0755 "${ROOT}/run.sh" "${DEST}/"
 
 cat > "${DEST}/README.txt" <<EOF
@@ -45,8 +45,12 @@ Dependencias del sistema:
 Ejecutar:
   ./run.sh
 
-Bloqueo web del cliente (una vez, como root):
-  sudo ./install-dns-helper.sh \$USER
+Bloqueo web del cliente mediante nftables (una vez, como root):
+  sudo pacman -S nftables
+  sudo ./install-nft-helper.sh \$USER
+
+El cliente pide la contraseña local al aplicar cambios. Las IPs se resuelven
+en el momento de aplicar la lista y pueden cambiar posteriormente.
 
 Variables útiles:
   WAYVIEWER_BIN=/ruta/alternativa/wayviewer
