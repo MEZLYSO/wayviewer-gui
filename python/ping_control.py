@@ -19,7 +19,7 @@ def set_blocked(blocked: bool, password: str | None) -> tuple[bool, str]:
     command = "ping-block" if blocked else "ping-unblock"
     try:
         result = subprocess.run(
-            [sudo, "-k", "-S", "-p", "", HELPER, command],
+            [sudo, "-S", "-p", "", HELPER, command],
             input=password + "\n",
             capture_output=True,
             text=True,

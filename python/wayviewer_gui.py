@@ -335,6 +335,8 @@ class TcpChat:
         self.outgoing_cancel: set[str] = set()
         self.sending = False
         self.send_threads: list[threading.Thread] = []
+        self._password_lock = threading.Lock()
+        self._root_password: str | None = None
         self._start_server()
 
     @property
@@ -558,12 +560,22 @@ class TcpChat:
         self.events.put(("control_local_done", f"{action}\t{int(ok)}\t{detail}"))
 
     def _request_password(self) -> str | None:
+        with self._password_lock:
+            if self._root_password is not None:
+                return self._root_password
         request = {"event": threading.Event(), "password": None}
         self.events.put(("password_request", request))
         request["event"].wait(timeout=120)
         password = request.get("password")
         request["password"] = None
+        if password is not None:
+            with self._password_lock:
+                self._root_password = password
         return password
+
+    def clear_password(self) -> None:
+        with self._password_lock:
+            self._root_password = None
 
     def _ping_worker(self, action: str) -> None:
         password = self._request_password()
@@ -578,6 +590,8 @@ class TcpChat:
             )
         except Exception as exc:  # noqa: BLE001
             ok, detail = False, str(exc)
+        if not ok:
+            self.clear_password()
         self._send_line(sway_control.build_ack(action, ok, detail) + "\n")
 
     # ------------------------------------------------------ archivos
@@ -830,6 +844,7 @@ class TcpChat:
 
     def stop(self) -> None:
         self.stop_event.set()
+        self.clear_password()
         self.disconnect()
         if self.server is not None:
             try:
