@@ -40,8 +40,8 @@ def atomic_write(path: str, content: str) -> None:
 def entries(domains: list[str]) -> list[str]:
     lines = [BEGIN]
     for domain in domains:
-        lines.append(f"0.0.0.0 {domain}")
-        lines.append(f":: {domain}")
+        lines.append(f"127.0.0.1 {domain}")
+        lines.append(f"::1 {domain}")
     lines.append(END)
     return lines
 
@@ -64,7 +64,7 @@ def read_domains() -> list[str]:
     found = []
     for line in lines[start:end]:
         parts = line.split()
-        if len(parts) == 2 and parts[0] in ("0.0.0.0", "::"):
+        if len(parts) == 2 and parts[0] in ("127.0.0.1", "::1"):
             domain = domain_control.normalize(parts[1])
             if domain and domain not in found:
                 found.append(domain)
