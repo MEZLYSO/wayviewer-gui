@@ -1888,8 +1888,6 @@ class WayViewerPanel:
             self.unblock_btn.configure(state="normal")
             self.ping_block_btn.configure(state="normal")
             self.ping_unblock_btn.configure(state="normal")
-            self.domain_sync_btn.configure(state="normal")
-            self.domain_apply_btn.configure(state="normal")
             self.chat_entry.focus_set()
         else:
             self.client_ip_entry.configure(state="normal")
@@ -1907,8 +1905,6 @@ class WayViewerPanel:
             self.unblock_btn.configure(state="disabled")
             self.ping_block_btn.configure(state="disabled")
             self.ping_unblock_btn.configure(state="disabled")
-            self.domain_sync_btn.configure(state="disabled")
-            self.domain_apply_btn.configure(state="disabled")
             self.var_chat_message.set("")
             self._set_file_status(f"Se guardan en {FILE_DIR}")
             self._set_control_status(
