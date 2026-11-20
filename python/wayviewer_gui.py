@@ -9,8 +9,8 @@ Sección «Conectar»:
   puerto y varios parámetros. Incluye un chat TCP bidireccional y envío de
   archivos; lo recibido se guarda en ~/wayviewer.
 
-La versión cliente recibe la lista de dominios y las órdenes de entrada
-desde el panel de administración, y aplica el bloqueo mediante nftables.
+La versión cliente recibe las órdenes de entrada y de bloqueo de ping desde
+el panel de administración y las aplica localmente.
 """
 
 from __future__ import annotations
@@ -18,7 +18,6 @@ from __future__ import annotations
 import base64
 import binascii
 import ipaddress
-import json
 import os
 import queue
 import shutil
@@ -32,7 +31,7 @@ import uuid
 from collections import deque
 
 import sway_control
-import domain_control
+import ping_control
 
 try:
     import tkinter as tk
@@ -523,30 +522,6 @@ class TcpChat:
             ok = len(fields) > 2 and fields[2] == "ok"
             remote_action = fields[1] if len(fields) > 1 else ""
             detail = fields[3] if len(fields) > 3 else ""
-            if remote_action == "domains":
-                self.events.put(("domains_ack", f"{int(ok)}\t{detail}"))
-            return
-        if action == "domains":
-            subaction = fields[1] if len(fields) > 1 else ""
-            if subaction == "state":
-                payload = fields[2] if len(fields) > 2 else "[]"
-                self.events.put(("domains_state", payload))
-                return
-            if subaction in ("get", "set"):
-                payload = fields[2] if len(fields) > 2 else "[]"
-                threading.Thread(
-                    target=self._domains_worker,
-                    args=(subaction, payload),
-                    name="dns-domains",
-                    daemon=True,
-                ).start()
-                return
-            self.events.put(
-                (
-                    "control_error",
-                    f"Acción de dominios desconocida: {subaction}",
-                )
-            )
             return
         if action in ("block", "unblock"):
             # swaymsg puede tardar; no bloqueamos el hilo lector del chat.
@@ -582,58 +557,6 @@ class TcpChat:
         self._send_line(sway_control.build_ack(action, ok, detail) + "\n")
         self.events.put(("control_local_done", f"{action}\t{int(ok)}\t{detail}"))
 
-    def _domains_worker(self, subaction: str, payload: str) -> None:
-        """Aplica o consulta la lista de dominios sin bloquear el chat."""
-        try:
-            if subaction == "set":
-                try:
-                    items = json.loads(payload)
-                except ValueError:
-                    items = None
-                if items is None:
-                    self._send_line(
-                        sway_control.build_ack(
-                            "domains", False, "JSON inválido"
-                        )
-                        + "\n"
-                    )
-                    return
-                request = {"event": threading.Event(), "password": None}
-                self.events.put(("password_request", request))
-                request["event"].wait(timeout=120)
-                password = request.get("password")
-                if password is None:
-                    self._send_line(
-                        sway_control.build_ack("domains", False, "operación cancelada") + "\n"
-                    )
-                    return
-                try:
-                    ok, applied, detail = domain_control.apply(items, password)
-                finally:
-                    request["password"] = None
-            else:
-                ok, applied, detail = domain_control.get_state()
-
-            encoded = json.dumps(
-                applied, ensure_ascii=True, separators=(",", ":")
-            )
-            # El estado va antes que el ACK para que un error sea lo último.
-            self._send_line(
-                sway_control.build_domains_state(applied) + "\n"
-            )
-            if subaction == "set" or not ok:
-                self._send_line(
-                    sway_control.build_ack("domains", ok, detail) + "\n"
-                )
-            self.events.put(("domains_state", encoded))
-            if subaction == "set" or not ok:
-                self.events.put(("domains_ack", f"{int(ok)}\t{detail}"))
-        except Exception as exc:  # noqa: BLE001 - se informa al usuario
-            self._send_line(
-                sway_control.build_ack("domains", False, str(exc)) + "\n"
-            )
-            self.events.put(("control_error", f"Dominios: {exc}"))
-
     def _request_password(self) -> str | None:
         request = {"event": threading.Event(), "password": None}
         self.events.put(("password_request", request))
@@ -650,7 +573,7 @@ class TcpChat:
             )
             return
         try:
-            ok, detail = domain_control.set_ping_blocked(
+            ok, detail = ping_control.set_blocked(
                 action == "ping-block", password
             )
         except Exception as exc:  # noqa: BLE001
@@ -967,7 +890,6 @@ class WayViewerPanel:
         self.var_framedrop = tk.BooleanVar(value=True)
         self.var_tlpktdrop = tk.BooleanVar(value=True)
         self.var_chat_message = tk.StringVar(value="")
-        self.domains = domain_control.load_local()
 
         self._configure_window()
         self._build_header()
@@ -1169,7 +1091,6 @@ class WayViewerPanel:
         columns = self.columns_frame
         self.tx_card.grid_forget()
         self.cx_card.grid_forget()
-        self.domains_card.grid_forget()
         if self.layout_mode == "wide":
             columns.grid_columnconfigure(0, weight=0, minsize=362)
             columns.grid_columnconfigure(1, weight=1)
@@ -1178,9 +1099,6 @@ class WayViewerPanel:
             columns.grid_rowconfigure(2, weight=0)
             self.tx_card.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
             self.cx_card.grid(row=0, column=1, sticky="nsew")
-            self.domains_card.grid(
-                row=1, column=0, columnspan=2, sticky="ew", pady=(16, 0)
-            )
         else:
             columns.grid_columnconfigure(0, weight=1, minsize=0)
             columns.grid_columnconfigure(1, weight=0, minsize=0)
@@ -1191,9 +1109,6 @@ class WayViewerPanel:
                 row=0, column=0, columnspan=2, sticky="ew", pady=(0, 14)
             )
             self.cx_card.grid(row=1, column=0, columnspan=2, sticky="ew")
-            self.domains_card.grid(
-                row=2, column=0, columnspan=2, sticky="ew", pady=(14, 0)
-            )
 
     def _arrange_client_fields(self) -> None:
         if self.layout_mode == "narrow":
@@ -1578,80 +1493,6 @@ class WayViewerPanel:
         )
         self.control_status.pack(fill="x", pady=(10, 0))
         self._bind_wrap(self.control_status, 110)
-
-        # --- Bloqueo web por dominios ------------------------------------
-        domains_card, domains_inner = self._make_card(
-            columns, "BLOQUEO WEB", "Dominios bloqueados", AMBER
-        )
-        self.domains_card = domains_card
-        self._build_domains_card(domains_inner)
-
-    def _build_domains_card(self, inner: tk.Frame) -> None:
-        tk.Label(
-            inner,
-            text=(
-                "El panel de administración envía la lista y este equipo la "
-                "aplica mediante nftables con su helper local. Se bloquean las "
-                "dominios y sus IPs actuales; el resto de HTTPS sigue "
-                "funcionando. Usa el chat solo en una red de confianza: no "
-                "tiene autenticación."
-            ),
-            bg=PANEL,
-            fg=MUTED,
-            font=("DejaVu Sans", 9),
-            anchor="w",
-            justify="left",
-            wraplength=760,
-        ).pack(fill="x", pady=(8, 0))
-
-        list_frame = tk.Frame(
-            inner,
-            bg="#0b0e13",
-            highlightthickness=1,
-            highlightbackground=BORDER,
-        )
-        list_frame.pack(fill="both", expand=True, pady=(8, 0))
-        scroll = tk.Scrollbar(
-            list_frame,
-            bg=PANEL,
-            troughcolor="#0b0e13",
-            activebackground=BORDER,
-            relief="flat",
-            width=12,
-        )
-        scroll.pack(side="right", fill="y")
-        self.domain_listbox = tk.Listbox(
-            list_frame,
-            bg="#0b0e13",
-            fg="#c9d1d9",
-            selectbackground=ACCENT,
-            selectforeground="#ffffff",
-            relief="flat",
-            highlightthickness=0,
-            font=MONO_SMALL,
-            height=6,
-            activestyle="none",
-            exportselection=False,
-            yscrollcommand=scroll.set,
-        )
-        self.domain_listbox.pack(side="left", fill="both", expand=True)
-        scroll.configure(command=self.domain_listbox.yview)
-
-        self.domain_status = tk.Label(
-            inner,
-            text="",
-            bg=PANEL,
-            fg=MUTED,
-            font=("DejaVu Sans", 9),
-            anchor="w",
-            justify="left",
-            wraplength=420,
-        )
-        self.domain_status.pack(fill="x", pady=(8, 0))
-        self._bind_wrap(self.domain_status, 110)
-
-        self._refresh_domains()
-        self._set_domain_status(self._domain_summary(), MUTED)
 
     # ------------------------------------------------------- interfaz de red
     def _refresh_interfaces(self, force: bool = False) -> None:
@@ -2050,47 +1891,6 @@ class WayViewerPanel:
             ("control_local_done", f"{action}\t{int(ok)}\t{detail}")
         )
 
-    # ------------------------------------------- dominios bloqueados (nftables)
-    def _domain_summary(self) -> str:
-        if self.domains:
-            return f"{len(self.domains)} dominios aplicados."
-        return "Sin dominios aplicados."
-
-    def _set_domain_status(self, message: str, color: str = MUTED) -> None:
-        if hasattr(self, "domain_status"):
-            self.domain_status.configure(text=message, fg=color)
-
-    def _refresh_domains(self) -> None:
-        if not hasattr(self, "domain_listbox"):
-            return
-        self.domain_listbox.delete(0, "end")
-        for domain in self.domains:
-            self.domain_listbox.insert("end", domain)
-
-    def _apply_domains_state(self, payload: str) -> None:
-        try:
-            items = json.loads(payload)
-        except ValueError:
-            self._set_domain_status("Lista de dominios inválida.", RED)
-            return
-        domains, error = domain_control.validate_list(items)
-        if error:
-            self._set_domain_status(error, RED)
-            return
-        self.domains = domains
-        try:
-            domain_control.save_local(domains)
-        except OSError:
-            pass
-        self._refresh_domains()
-        self._set_domain_status(
-            f"Lista aplicada: {len(domains)} dominios bloqueados.", GREEN
-        )
-        self._chat_append(
-            "system",
-            f"Bloqueo web: {len(domains)} dominios en la lista.",
-        )
-
     # ---------------------------------------------------------- archivos
     def _set_file_status(self, message: str, color: str = MUTED) -> None:
         if hasattr(self, "file_status"):
@@ -2236,24 +2036,6 @@ class WayViewerPanel:
                 elif kind == "control_error":
                     self._set_control_status(f"Control remoto: {payload}", RED)
                     self._chat_append("error", f"Control remoto: {payload}")
-                elif kind == "domains_state":
-                    self._apply_domains_state(payload)
-                elif kind == "domains_ack":
-                    ok_text, detail = self._split_payload(payload)
-                    if ok_text == "1":
-                        self._set_domain_status(
-                            f"Dominios aplicados: {detail}", GREEN
-                        )
-                        self._chat_append(
-                            "system", f"Bloqueo web: {detail}"
-                        )
-                    else:
-                        self._set_domain_status(
-                            f"Error de dominios: {detail}", RED
-                        )
-                        self._chat_append(
-                            "error", f"Bloqueo web: {detail}"
-                        )
                 elif kind == "file_pick_done":
                     self.picking_file = False
                     self.file_btn.configure(

@@ -5,7 +5,6 @@ set -eu
 SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(CDPATH= cd -- "${SELF_DIR}/.." && pwd)
 HELPER=/usr/local/libexec/wayviewer-nft
-MODULE=/usr/local/libexec/domain_control.py
 SUDOERS=/etc/sudoers.d/wayviewer-nft
 TARGET_USER=${1:-${SUDO_USER:-}}
 
@@ -16,7 +15,6 @@ fi
 [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != root ] || { echo "Indica el usuario de la GUI." >&2; exit 1; }
 id "$TARGET_USER" >/dev/null 2>&1 || { echo "El usuario no existe." >&2; exit 1; }
 [ -f "$ROOT/python/wayviewer_nft_helper.py" ] || { echo "Falta el helper nftables." >&2; exit 1; }
-[ -f "$ROOT/python/domain_control.py" ] || { echo "Falta domain_control.py." >&2; exit 1; }
 command -v sudo >/dev/null 2>&1 || { echo "Instala sudo primero." >&2; exit 1; }
 command -v visudo >/dev/null 2>&1 || { echo "Falta visudo." >&2; exit 1; }
 command -v nft >/dev/null 2>&1 || { echo "Instala nftables: sudo pacman -S nftables." >&2; exit 1; }
@@ -36,7 +34,6 @@ fi
 
 install -d -o root -g root -m 0755 /usr/local/libexec
 install -o root -g root -m 0755 "$ROOT/python/wayviewer_nft_helper.py" "$HELPER"
-install -o root -g root -m 0644 "$ROOT/python/domain_control.py" "$MODULE"
 
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT INT TERM

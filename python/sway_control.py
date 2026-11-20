@@ -151,15 +151,6 @@ def blocked() -> bool:
 
 
 # --------------------------------------------------------------- protocolo
-def _domains_json(domains: list[str]) -> str:
-    return json.dumps(domains, ensure_ascii=True, separators=(",", ":"))
-
-
-def build_domains_state(domains: list[str]) -> str:
-    """Envía al administrador la lista aplicada actualmente."""
-    return f"{MAGIC}\tdomains\tstate\t{_domains_json(domains)}"
-
-
 def build_ping_command(blocked: bool) -> str:
     """Pide al cliente bloquear o permitir solicitudes ICMP salientes."""
     return f"{MAGIC}\t{'ping-block' if blocked else 'ping-unblock'}"
