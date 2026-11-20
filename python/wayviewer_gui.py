@@ -10,7 +10,7 @@ Sección «Conectar»:
   archivos; lo recibido se guarda en ~/wayviewer.
 
 La versión cliente recibe la lista de dominios y las órdenes de entrada
-desde el panel de administración, y aplica el bloqueo DNS y Sway localmente.
+desde el panel de administración, y aplica el bloqueo mediante /etc/hosts.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ import domain_control
 
 try:
     import tkinter as tk
-    from tkinter import messagebox
+    from tkinter import messagebox, simpledialog
 except ModuleNotFoundError:  # pragma: no cover - depende del sistema
     sys.stderr.write(
         "Falta el módulo tkinter.\n"
@@ -590,7 +590,19 @@ class TcpChat:
                         + "\n"
                     )
                     return
-                ok, applied, detail = domain_control.apply(items)
+                request = {"event": threading.Event(), "password": None}
+                self.events.put(("password_request", request))
+                request["event"].wait(timeout=120)
+                password = request.get("password")
+                if password is None:
+                    self._send_line(
+                        sway_control.build_ack("domains", False, "operación cancelada") + "\n"
+                    )
+                    return
+                try:
+                    ok, applied, detail = domain_control.apply(items, password)
+                finally:
+                    request["password"] = None
             else:
                 ok, applied, detail = domain_control.get_state()
 
@@ -1548,7 +1560,7 @@ class WayViewerPanel:
             inner,
             text=(
                 "El panel de administración envía la lista y este equipo la "
-                "aplica mediante DNS con su helper local. Se bloquea el "
+                "aplica mediante /etc/hosts con su helper local. Se bloquea el "
                 "dominio y sus subdominios; el resto de HTTPS sigue "
                 "funcionando. Usa el chat solo en una red de confianza: no "
                 "tiene autenticación."
@@ -2007,7 +2019,7 @@ class WayViewerPanel:
             ("control_local_done", f"{action}\t{int(ok)}\t{detail}")
         )
 
-    # ------------------------------------------- dominios bloqueados (DNS)
+    # ------------------------------------------- dominios bloqueados (/etc/hosts)
     def _domain_summary(self) -> str:
         if self.domains:
             return f"{len(self.domains)} dominios aplicados."
@@ -2166,6 +2178,15 @@ class WayViewerPanel:
                     self._chat_append("incoming", payload)
                 elif kind == "chat_system":
                     self._chat_append("system", payload)
+                elif kind == "password_request":
+                    password = simpledialog.askstring(
+                        "Permiso de administrador",
+                        "El cliente necesita tu contraseña para actualizar /etc/hosts.",
+                        parent=self.root,
+                        show="*",
+                    )
+                    payload["password"] = password
+                    payload["event"].set()
                 elif kind == "control_local_done":
                     action, ok, detail = self._split_control_payload(payload)
                     if ok:
