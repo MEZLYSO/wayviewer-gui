@@ -17,6 +17,7 @@ install -m 0644 "${ROOT}/python/sway_control.py" "${DEST}/python/"
 install -m 0644 "${ROOT}/python/domain_control.py" "${DEST}/python/"
 install -m 0644 "${ROOT}/python/wayviewer_dns_helper.py" "${DEST}/python/"
 install -m 0755 "${ROOT}/packaging/install-dns-helper.sh" "${DEST}/"
+install -m 0755 "${ROOT}/packaging/temporary-unbound-resolver.sh" "${DEST}/"
 install -m 0755 "${ROOT}/run.sh" "${DEST}/"
 cat > "${DEST}/README.txt" <<README
 WayViewer ${VERSION} (${KIND}) - Cliente
@@ -36,6 +37,10 @@ Ejecutar:
 
 Bloqueo web del cliente (una vez, como root; requiere unbound):
   sudo ./install-dns-helper.sh \$USER
+
+Resolver temporal (guarda y permite restaurar el estado anterior):
+  sudo ./temporary-unbound-resolver.sh activate
+  sudo ./temporary-unbound-resolver.sh revert
 
 Variables útiles:
   WAYVIEWER_BIN=/ruta/alternativa/wayviewer
