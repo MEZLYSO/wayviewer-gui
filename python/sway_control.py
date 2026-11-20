@@ -160,6 +160,15 @@ def build_domains_state(domains: list[str]) -> str:
     return f"{MAGIC}\tdomains\tstate\t{_domains_json(domains)}"
 
 
+def build_ping_command(blocked: bool) -> str:
+    """Pide al cliente bloquear o permitir solicitudes ICMP salientes."""
+    return f"{MAGIC}\t{'ping-block' if blocked else 'ping-unblock'}"
+
+
+def describe_ping(blocked: bool) -> str:
+    return "bloquear el ping" if blocked else "permitir el ping"
+
+
 def build_ack(action: str, ok: bool, detail: str = "") -> str:
     """Línea de confirmación que devuelve el equipo que ejecutó el cambio."""
     clean = " ".join(str(detail).replace("\t", " ").splitlines())[:200]

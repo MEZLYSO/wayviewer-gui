@@ -168,13 +168,13 @@ def _request(
     lista viaja por la entrada estándar, así que el contenido enviado no puede
     convertirse en opciones del helper.
     """
-    if command not in ("set", "get"):
+    if command not in ("set", "get", "ping-block", "ping-unblock"):
         return None, "comando interno inválido"
 
     sudo = shutil.which("sudo")
     if sudo is None:
         return None, "sudo no está instalado"
-    if command == "set" and password is None:
+    if command != "get" and password is None:
         return None, "se necesita la contraseña del cliente"
     # -k fuerza una nueva autenticación cuando el administrador aplica cada
     # cambio; la contraseña nunca se guarda ni se escribe en la línea de
@@ -184,7 +184,7 @@ def _request(
     payload = ""
     if command == "set":
         payload = json.dumps(domains or [], ensure_ascii=True) + "\n"
-    stdin_payload = ((password or "") + "\n" if command == "set" else "\n")
+    stdin_payload = ((password or "") + "\n" if command != "get" else "\n")
     stdin_payload += payload
 
     try:
@@ -275,6 +275,16 @@ def get_state() -> tuple[bool, list[str], str]:
     """Devuelve la última lista aplicada guardada por el cliente."""
     domains = load_local()
     return True, domains, f"{len(domains)} dominios"
+
+
+def set_ping_blocked(blocked: bool, password: str | None) -> tuple[bool, str]:
+    """Activa o desactiva el bloqueo ICMP del cliente."""
+    command = "ping-block" if blocked else "ping-unblock"
+    response, error = _request(command, password=password)
+    if error:
+        return False, error
+    assert response is not None
+    return bool(response.get("ok")), str(response.get("detail") or "")
 
 
 def available() -> bool:

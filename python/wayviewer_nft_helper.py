@@ -12,6 +12,7 @@ import domain_control  # noqa: E402
 
 FAMILY = "inet"
 TABLE = "wayviewer"
+PING_TABLE = "wayviewer_ping"
 MAX_INPUT = 1024 * 1024
 
 
@@ -90,12 +91,38 @@ def set_domains(items: object) -> dict:
     }
 
 
+def set_ping_blocked(blocked: bool) -> dict:
+    if blocked:
+        run(["nft", "delete", "table", FAMILY, PING_TABLE])
+        script = "\n".join(
+            [
+                f"add table {FAMILY} {PING_TABLE}",
+                f"add chain {FAMILY} {PING_TABLE} output {{ type filter hook output priority -100; policy accept; }}",
+                f"add rule {FAMILY} {PING_TABLE} output icmp type echo-request drop",
+                f"add rule {FAMILY} {PING_TABLE} output icmpv6 type echo-request drop",
+                "",
+            ]
+        )
+        result = run(["nft", "-f", "-"], script)
+        detail = (result.stderr or result.stdout).strip()[:300]
+        return {"ok": result.returncode == 0, "detail": "ping bloqueado" if result.returncode == 0 else detail, "domains": []}
+    result = run(["nft", "delete", "table", FAMILY, PING_TABLE])
+    if result.returncode not in (0, 1):
+        detail = (result.stderr or result.stdout).strip()[:300]
+        return {"ok": False, "detail": detail, "domains": []}
+    return {"ok": True, "detail": "ping permitido", "domains": []}
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    if len(args) != 1 or args[0] not in ("set", "get", "clear"):
-        print("uso: wayviewer-nft set|get|clear", file=sys.stderr)
+    if len(args) != 1 or args[0] not in ("set", "get", "clear", "ping-block", "ping-unblock"):
+        print("uso: wayviewer-nft set|get|clear|ping-block|ping-unblock", file=sys.stderr)
         return 2
-    if args[0] == "clear":
+    if args[0] == "ping-block":
+        response = set_ping_blocked(True)
+    elif args[0] == "ping-unblock":
+        response = set_ping_blocked(False)
+    elif args[0] == "clear":
         result = run(["nft", "delete", "table", FAMILY, TABLE])
         response = {"ok": result.returncode in (0, 1), "detail": "bloqueo nftables eliminado", "domains": []}
     elif args[0] == "get":

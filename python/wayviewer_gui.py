@@ -557,6 +557,14 @@ class TcpChat:
                 daemon=True,
             ).start()
             return
+        if action in ("ping-block", "ping-unblock"):
+            threading.Thread(
+                target=self._ping_worker,
+                args=(action,),
+                name="nft-ping-control",
+                daemon=True,
+            ).start()
+            return
         self.events.put(
             ("control_error", f"Acción de control desconocida: {action}")
         )
@@ -625,6 +633,29 @@ class TcpChat:
                 sway_control.build_ack("domains", False, str(exc)) + "\n"
             )
             self.events.put(("control_error", f"Dominios: {exc}"))
+
+    def _request_password(self) -> str | None:
+        request = {"event": threading.Event(), "password": None}
+        self.events.put(("password_request", request))
+        request["event"].wait(timeout=120)
+        password = request.get("password")
+        request["password"] = None
+        return password
+
+    def _ping_worker(self, action: str) -> None:
+        password = self._request_password()
+        if password is None:
+            self._send_line(
+                sway_control.build_ack(action, False, "operación cancelada") + "\n"
+            )
+            return
+        try:
+            ok, detail = domain_control.set_ping_blocked(
+                action == "ping-block", password
+            )
+        except Exception as exc:  # noqa: BLE001
+            ok, detail = False, str(exc)
+        self._send_line(sway_control.build_ack(action, ok, detail) + "\n")
 
     # ------------------------------------------------------ archivos
     def send_file(self, path: str) -> bool:
