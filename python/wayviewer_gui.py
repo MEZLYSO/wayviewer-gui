@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""Panel tkinter para transmitir con wayviewer/relay SRT y generar el
-comando de conexión para el cliente.
+"""Panel tkinter de administración de WayViewer.
 
 Sección «Transmitir imagen»:
   arranca wayviewer + python/wayviewer_relay.py.
@@ -9,6 +8,10 @@ Sección «Conectar»:
   genera el comando ffplay para el equipo cliente, permitiendo elegir IP,
   puerto y varios parámetros. Incluye un chat TCP bidireccional y envío de
   archivos; lo recibido se guarda en ~/wayviewer.
+
+La versión de administración edita y envía la lista de dominios bloqueados
+y las órdenes de bloqueo de entrada al cliente. No ejecuta ``swaymsg`` ni
+escribe la configuración de unbound: eso ocurre en el equipo cliente.
 """
 
 from __future__ import annotations
@@ -534,87 +537,24 @@ class TcpChat:
                 payload = fields[2] if len(fields) > 2 else "[]"
                 self.events.put(("domains_state", payload))
                 return
-            if subaction in ("get", "set"):
-                payload = fields[2] if len(fields) > 2 else "[]"
-                threading.Thread(
-                    target=self._domains_worker,
-                    args=(subaction, payload),
-                    name="dns-domains",
-                    daemon=True,
-                ).start()
-                return
             self.events.put(
                 (
                     "control_error",
-                    f"Acción de dominios desconocida: {subaction}",
+                    "Este equipo administra; no aplica listas de dominios.",
                 )
             )
             return
         if action in ("block", "unblock"):
-            # swaymsg puede tardar; no bloqueamos el hilo lector del chat.
-            threading.Thread(
-                target=self._control_worker,
-                args=(action,),
-                name="sway-control",
-                daemon=True,
-            ).start()
+            self.events.put(
+                (
+                    "control_error",
+                    "Este equipo administra; no ejecuta el bloqueo de entrada.",
+                )
+            )
             return
         self.events.put(
             ("control_error", f"Acción de control desconocida: {action}")
         )
-
-    def _control_worker(self, action: str) -> None:
-        try:
-            if action == "block":
-                ok = sway_control.block()
-                detail = "entrada bloqueada" if ok else "Sway no disponible"
-            else:
-                ok = sway_control.restore(force=True)
-                detail = "entrada restaurada" if ok else "Sway no disponible"
-        except Exception as exc:  # noqa: BLE001 - se informa al usuario
-            ok, detail = False, str(exc)
-        self._send_line(sway_control.build_ack(action, ok, detail) + "\n")
-        self.events.put(("control_local_done", f"{action}\t{int(ok)}\t{detail}"))
-
-    def _domains_worker(self, subaction: str, payload: str) -> None:
-        """Aplica o consulta la lista de dominios sin bloquear el chat."""
-        try:
-            if subaction == "set":
-                try:
-                    items = json.loads(payload)
-                except ValueError:
-                    items = None
-                if items is None:
-                    self._send_line(
-                        sway_control.build_ack(
-                            "domains", False, "JSON inválido"
-                        )
-                        + "\n"
-                    )
-                    return
-                ok, applied, detail = domain_control.apply(items)
-            else:
-                ok, applied, detail = domain_control.get_state()
-
-            encoded = json.dumps(
-                applied, ensure_ascii=True, separators=(",", ":")
-            )
-            # El estado va antes que el ACK para que un error sea lo último.
-            self._send_line(
-                sway_control.build_domains_state(applied) + "\n"
-            )
-            if subaction == "set" or not ok:
-                self._send_line(
-                    sway_control.build_ack("domains", ok, detail) + "\n"
-                )
-            self.events.put(("domains_state", encoded))
-            if subaction == "set" or not ok:
-                self.events.put(("domains_ack", f"{int(ok)}\t{detail}"))
-        except Exception as exc:  # noqa: BLE001 - se informa al usuario
-            self._send_line(
-                sway_control.build_ack("domains", False, str(exc)) + "\n"
-            )
-            self.events.put(("control_error", f"Dominios: {exc}"))
 
     # ------------------------------------------------------ archivos
     def send_file(self, path: str) -> bool:
@@ -944,7 +884,7 @@ class WayViewerPanel:
 
     # ------------------------------------------------------------------ UI
     def _configure_window(self) -> None:
-        self.root.title("WayViewer · Panel de transmisión")
+        self.root.title("WayViewer · Administración")
         self.root.configure(bg=BG)
         self.root.minsize(980, 620)
         width, height = 1180, 820
@@ -978,7 +918,7 @@ class WayViewerPanel:
         ).pack(anchor="w")
         self.header_subtitle = tk.Label(
             words,
-            text="Panel de transmisión, chat y archivos",
+            text="Administración: controles y dominios",
             bg=HEADER,
             fg=MUTED,
             font=("DejaVu Sans", 9),
@@ -1282,9 +1222,9 @@ class WayViewerPanel:
         narrow = self.layout_mode == "narrow"
         self.header_subtitle.configure(
             text=(
-                "Transmisión · chat y archivos"
+                "Administración · controles"
                 if narrow
-                else "Panel de transmisión, chat y archivos"
+                else "Administración: controles y dominios"
             )
         )
         self.refresh_btn.configure(
@@ -1645,7 +1585,7 @@ class WayViewerPanel:
 
         self.control_status = tk.Label(
             control_row,
-            text="Control remoto: requiere Sway en el otro equipo.",
+            text="Control remoto: requiere Sway en el equipo cliente.",
             bg=PANEL,
             fg=MUTED,
             font=("DejaVu Sans", 9),
@@ -1667,10 +1607,11 @@ class WayViewerPanel:
         tk.Label(
             inner,
             text=(
-                "Se bloquea el dominio y sus subdominios mediante DNS. "
-                "El resto de HTTPS sigue funcionando. El cliente aplica la "
-                "lista con su helper DNS. Usa el chat solo en una red de "
-                "confianza: no tiene autenticación."
+                "Edita la lista aquí y envíala al cliente: se bloquea el "
+                "dominio y sus subdominios mediante DNS y el resto de HTTPS "
+                "sigue funcionando. El equipo cliente aplica la lista con su "
+                "helper local. Usa el chat solo en una red de confianza: no "
+                "tiene autenticación."
             ),
             bg=PANEL,
             fg=MUTED,
@@ -2135,7 +2076,8 @@ class WayViewerPanel:
             self.var_chat_message.set("")
             self._set_file_status(f"Se guardan en {FILE_DIR}")
             self._set_control_status(
-                "Control remoto: conecta el chat para usarlo.", MUTED
+                "Control remoto: conecta el chat para administrar el cliente.",
+                MUTED,
             )
 
     def _send_chat(self, _event: object = None) -> str:
@@ -2180,21 +2122,6 @@ class WayViewerPanel:
         )
         self._chat_append(
             "system", f"Control remoto enviado: {sway_control.describe(action)}"
-        )
-
-    def _local_control_worker(self, action: str) -> None:
-        """Bloquea/desbloquea por señal local (SIGUSR1/SIGUSR2)."""
-        try:
-            if action == "block":
-                ok = sway_control.block()
-                detail = "entrada bloqueada" if ok else "Sway no disponible"
-            else:
-                ok = sway_control.restore(force=True)
-                detail = "entrada restaurada" if ok else "Sway no disponible"
-        except Exception as exc:  # noqa: BLE001 - se informa al usuario
-            ok, detail = False, str(exc)
-        self.chat_events.put(
-            ("control_local_done", f"{action}\t{int(ok)}\t{detail}")
         )
 
     # ------------------------------------------- dominios bloqueados (DNS)
@@ -2471,11 +2398,11 @@ class WayViewerPanel:
                     if ok:
                         label = "bloqueada" if action == "block" else "desbloqueada"
                         self._set_control_status(
-                            f"Otro equipo: entrada {label}.", GREEN
+                            f"Equipo cliente: entrada {label}.", GREEN
                         )
                         self._chat_append(
                             "system",
-                            f"Control remoto: entrada {label} en el otro equipo.",
+                            f"Control remoto: entrada {label} en el cliente.",
                         )
                     else:
                         self._set_control_status(
@@ -2483,21 +2410,6 @@ class WayViewerPanel:
                         )
                         self._chat_append(
                             "error", f"Control remoto falló: {detail}"
-                        )
-                elif kind == "control_local_done":
-                    action, ok, detail = self._split_control_payload(payload)
-                    if ok:
-                        label = "bloqueada" if action == "block" else "desbloqueada"
-                        self._set_control_status(
-                            f"Entrada {label} en este equipo.", GREEN
-                        )
-                        self._chat_append(
-                            "system",
-                            f"Control remoto: entrada {label} en este equipo.",
-                        )
-                    else:
-                        self._set_control_status(
-                            f"No se pudo aplicar el control: {detail}", RED
                         )
                 elif kind == "control_error":
                     self._set_control_status(f"Control remoto: {payload}", RED)
@@ -2994,14 +2906,6 @@ class WayViewerPanel:
                     messagebox.showerror(
                         "Error de transmisión", payload, parent=self.root
                     )
-                elif kind == "control_local":
-                    # SIGUSR1/SIGUSR2: se ejecuta fuera del hilo de la GUI.
-                    threading.Thread(
-                        target=self._local_control_worker,
-                        args=(payload,),
-                        name="sway-control-local",
-                        daemon=True,
-                    ).start()
         except queue.Empty:
             pass
 
@@ -3082,12 +2986,6 @@ class WayViewerPanel:
         self.chat.stop()
         self._terminate_picker()
         self._terminate_all(grace=grace)
-        # Si esta instancia había bloqueado la entrada, devolverla.
-        try:
-            if sway_control.blocked():
-                sway_control.restore()
-        except Exception:  # noqa: BLE001 - nunca impedir el cierre
-            pass
 
     def install_signal_handlers(self) -> None:
         def _handler(_signum, _frame):
@@ -3097,30 +2995,12 @@ class WayViewerPanel:
             except tk.TclError:
                 pass
 
-        def _control_handler(action: str, _signum, _frame):
-            # Solo encola: el hilo de la GUI lanza swaymsg.
-            self.event_queue.put(("control_local", action))
-
         for name in ("SIGINT", "SIGTERM", "SIGHUP"):
             sig = getattr(signal, name, None)
             if sig is None:
                 continue
             try:
                 signal.signal(sig, _handler)
-            except (ValueError, OSError):
-                pass
-
-        for name, action in (("SIGUSR1", "block"), ("SIGUSR2", "unblock")):
-            sig = getattr(signal, name, None)
-            if sig is None:
-                continue
-            try:
-                signal.signal(
-                    sig,
-                    lambda _s, _f, action=action: _control_handler(
-                        action, _s, _f
-                    ),
-                )
             except (ValueError, OSError):
                 pass
 
@@ -3148,11 +3028,6 @@ class WayViewerPanel:
 
 
 def main() -> int:
-    # Recupera un bloqueo que haya quedado de una ejecución anterior.
-    try:
-        sway_control.heal()
-    except Exception:  # noqa: BLE001 - no impedir el arranque
-        pass
     try:
         root = tk.Tk()
     except tk.TclError as exc:

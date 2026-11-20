@@ -15,24 +15,22 @@ install -m 0644 "${ROOT}/python/wayviewer_gui.py" "${DEST}/python/"
 install -m 0644 "${ROOT}/python/wayviewer_relay.py" "${DEST}/python/"
 install -m 0644 "${ROOT}/python/sway_control.py" "${DEST}/python/"
 install -m 0644 "${ROOT}/python/domain_control.py" "${DEST}/python/"
-install -m 0644 "${ROOT}/python/wayviewer_dns_helper.py" "${DEST}/python/"
-install -m 0755 "${ROOT}/packaging/install-dns-helper.sh" "${DEST}/"
 install -m 0755 "${ROOT}/run.sh" "${DEST}/"
 cat > "${DEST}/README.txt" <<README
-WayViewer ${VERSION} (${KIND})
+WayViewer ${VERSION} (${KIND}) - Administración
+
+Esta es la versión de administración: edita y envía la lista de dominios y
+las órdenes de bloqueo al equipo cliente. No necesita unbound ni el helper
+DNS; el bloqueo se ejecuta en el cliente.
 
 Dependencias del sistema:
   - Python 3 + tkinter
   - FFmpeg (ffplay)
   - libsrt, libwayland, libdrm, mesa (para el binario wayviewer)
   - gtk3 (opcional, para el selector de archivos nativo)
-  - unbound (opcional, para el bloqueo web por dominios)
 
 Ejecutar:
   ./run.sh
-
-Bloqueo web opcional (una vez, como root):
-  sudo ./install-dns-helper.sh \$USER
 
 Variables útiles:
   WAYVIEWER_BIN=/ruta/alternativa/wayviewer

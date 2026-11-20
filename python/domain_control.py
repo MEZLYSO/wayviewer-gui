@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Lista de dominios bloqueados y cliente del helper DNS privilegiado.
+"""Lista de dominios bloqueados del panel de administración.
 
-La GUI se ejecuta como el usuario de la sesión y nunca escribe en
-``/etc/unbound``. Para aplicar la lista invoca con ``sudo -n`` el helper
-``/usr/local/libexec/wayviewer-dns``, que solo acepta los comandos ``set`` y
-``get`` y valida los dominios antes de tocar unbound.
+La GUI valida y guarda la lista localmente, y la envía al cliente por el
+chat. Este equipo no ejecuta el helper DNS ni escribe en ``/etc/unbound``:
+el bloqueo se aplica en el equipo cliente.
 
 El filtro es DNS, no de puertos: se bloquea la resolución del dominio y sus
 subdominios, pero el resto de HTTPS sigue funcionando.
@@ -16,25 +15,12 @@ import ipaddress
 import json
 import os
 import re
-import shutil
-import subprocess
 import tempfile
 import threading
 from urllib.parse import urlsplit
 
 MAX_DOMAINS = 500
 MAX_DOMAIN_LENGTH = 253
-
-HELPER = os.environ.get(
-    "WAYVIEWER_DNS_HELPER", "/usr/local/libexec/wayviewer-dns"
-)
-USE_SUDO = os.environ.get("WAYVIEWER_DNS_SUDO", "1").strip().lower() not in (
-    "0",
-    "false",
-    "no",
-    "off",
-)
-REQUEST_TIMEOUT = 60.0
 
 CONFIG_DIR = os.path.join(
     os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")),
@@ -162,125 +148,3 @@ def save_local(domains: list[str]) -> None:
             except OSError:
                 pass
             raise
-
-
-def _request(
-    command: str, domains: list[str] | None = None
-) -> tuple[dict | None, str]:
-    """Ejecuta el helper y devuelve (respuesta, error).
-
-    Nunca se pasa por shell: los argumentos son fijos (``set``/``get``) y la
-    lista viaja por la entrada estándar, así que el contenido enviado no puede
-    convertirse en opciones del helper.
-    """
-    if command not in ("set", "get"):
-        return None, "comando interno inválido"
-
-    argv: list[str] = []
-    if USE_SUDO:
-        sudo = shutil.which("sudo")
-        if sudo is None:
-            return None, (
-                "sudo no está instalado; instala el helper DNS y su regla "
-                "de sudoers"
-            )
-        # -n evita que la GUI se quede esperando una contraseña.
-        argv.extend([sudo, "-n"])
-    argv.extend([HELPER, command])
-
-    payload = ""
-    if command == "set":
-        payload = json.dumps(domains or [], ensure_ascii=True) + "\n"
-
-    try:
-        result = subprocess.run(
-            argv,
-            input=payload,
-            capture_output=True,
-            text=True,
-            timeout=REQUEST_TIMEOUT,
-            check=False,
-        )
-    except FileNotFoundError:
-        return None, (
-            f"helper DNS no instalado ({HELPER}); ejecuta "
-            "packaging/install-dns-helper.sh"
-        )
-    except PermissionError:
-        return None, f"sin permiso para ejecutar {HELPER}"
-    except subprocess.TimeoutExpired:
-        return None, "el helper DNS no respondió a tiempo"
-    except OSError as exc:
-        return None, f"no se pudo ejecutar el helper DNS: {exc}"
-
-    response = None
-    for line in reversed(result.stdout.splitlines()):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            candidate = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(candidate, dict):
-            response = candidate
-            break
-    if response is not None:
-        return response, ""
-
-    stderr = " ".join(result.stderr.split())[:300]
-    lowered = stderr.lower()
-    if "password is required" in lowered or "no tty present" in lowered:
-        return None, (
-            "sudo pide contraseña: instala la regla NOPASSWD del helper DNS"
-        )
-    if "not allowed" in lowered or "not in the sudoers" in lowered:
-        return None, (
-            "sudo no autoriza el helper DNS; revisa "
-            "/etc/sudoers.d/wayviewer-dns"
-        )
-    detail = stderr or f"el helper DNS terminó con código {result.returncode}"
-    return None, f"helper DNS: {detail}"
-
-
-def _result(
-    response: dict | None, error: str, fallback: list[str]
-) -> tuple[bool, list[str], str]:
-    if error:
-        return False, fallback, error
-    assert response is not None
-
-    domains, list_error = validate_list(response.get("domains", []))
-    if list_error:
-        domains = fallback
-    else:
-        try:
-            save_local(domains)
-        except OSError:
-            pass
-
-    if not response.get("ok"):
-        detail = str(response.get("detail") or "el helper DNS rechazó la petición")
-        return False, domains, detail
-    detail = str(response.get("detail") or f"{len(domains)} dominios")
-    return True, domains, detail
-
-
-def apply(domains: list[str]) -> tuple[bool, list[str], str]:
-    """Reemplaza la lista de dominios bloqueados en el cliente."""
-    valid, error = validate_list(domains)
-    if error:
-        return False, load_local(), error
-    response, request_error = _request("set", valid)
-    return _result(response, request_error, load_local())
-
-
-def get_state() -> tuple[bool, list[str], str]:
-    """Pide al helper la lista aplicada actualmente."""
-    response, error = _request("get")
-    return _result(response, error, load_local())
-
-
-def available() -> bool:
-    """True si el helper está instalado (no garantiza que sudo lo permita)."""
-    return os.access(HELPER, os.X_OK)
