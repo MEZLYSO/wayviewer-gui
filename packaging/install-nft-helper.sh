@@ -22,6 +22,18 @@ command -v visudo >/dev/null 2>&1 || { echo "Falta visudo." >&2; exit 1; }
 command -v nft >/dev/null 2>&1 || { echo "Instala nftables: sudo pacman -S nftables." >&2; exit 1; }
 command -v getent >/dev/null 2>&1 || { echo "Falta getent." >&2; exit 1; }
 
+# Limpia instalaciones anteriores del helper DNS/hosts de WayViewer.
+rm -f /usr/local/libexec/wayviewer-dns \
+    /usr/local/libexec/wayviewer-hosts \
+    /etc/sudoers.d/wayviewer-dns \
+    /etc/sudoers.d/wayviewer-hosts
+if [ -f /etc/hosts ] && grep -q '^# BEGIN WAYVIEWER BLOCKED DOMAINS$' /etc/hosts; then
+    cp -a /etc/hosts /etc/hosts.before-wayviewer-nft
+    sed -i \
+        '/^# BEGIN WAYVIEWER BLOCKED DOMAINS$/,/^# END WAYVIEWER BLOCKED DOMAINS$/d' \
+        /etc/hosts
+fi
+
 install -d -o root -g root -m 0755 /usr/local/libexec
 install -o root -g root -m 0755 "$ROOT/python/wayviewer_nft_helper.py" "$HELPER"
 install -o root -g root -m 0644 "$ROOT/python/domain_control.py" "$MODULE"
