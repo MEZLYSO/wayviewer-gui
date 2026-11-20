@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import binascii
 import ipaddress
+import json
 import os
 import queue
 import shutil
@@ -27,6 +28,9 @@ import threading
 import time
 import uuid
 from collections import deque
+
+import sway_control
+import domain_control
 
 try:
     import tkinter as tk
@@ -463,6 +467,8 @@ class TcpChat:
                     continue
                 if text.startswith("\x01\x01"):
                     self.events.put(("chat_incoming", text[1:][:4000]))
+                elif text.startswith(sway_control.MAGIC):
+                    self._handle_control_line(text)
                 elif text.startswith(FILE_MAGIC):
                     self._handle_file_line(text[len(FILE_MAGIC):])
                 else:
@@ -498,6 +504,117 @@ class TcpChat:
         if text.startswith("\x01"):
             text = "\x01" + text
         return self._send_line(text + "\n")
+
+    # ------------------------------------------------ control remoto (Sway)
+    def send_control(self, line: str) -> bool:
+        """Envía una línea de control ya construida (añade el salto de línea)."""
+        return self._send_line(line + "\n")
+
+    def _handle_control_line(self, line: str) -> None:
+        data, error = sway_control.parse(line)
+        if error:
+            self.events.put(("control_error", error))
+            return
+        fields = data["fields"]
+        action = fields[0] if fields else ""
+        if action == "ack":
+            ok = len(fields) > 2 and fields[2] == "ok"
+            remote_action = fields[1] if len(fields) > 1 else ""
+            detail = fields[3] if len(fields) > 3 else ""
+            if remote_action == "domains":
+                self.events.put(("domains_ack", f"{int(ok)}\t{detail}"))
+            else:
+                self.events.put(
+                    ("control_ack", f"{remote_action}\t{int(ok)}\t{detail}")
+                )
+            return
+        if action == "domains":
+            subaction = fields[1] if len(fields) > 1 else ""
+            if subaction == "state":
+                payload = fields[2] if len(fields) > 2 else "[]"
+                self.events.put(("domains_state", payload))
+                return
+            if subaction in ("get", "set"):
+                payload = fields[2] if len(fields) > 2 else "[]"
+                threading.Thread(
+                    target=self._domains_worker,
+                    args=(subaction, payload),
+                    name="dns-domains",
+                    daemon=True,
+                ).start()
+                return
+            self.events.put(
+                (
+                    "control_error",
+                    f"Acción de dominios desconocida: {subaction}",
+                )
+            )
+            return
+        if action in ("block", "unblock"):
+            # swaymsg puede tardar; no bloqueamos el hilo lector del chat.
+            threading.Thread(
+                target=self._control_worker,
+                args=(action,),
+                name="sway-control",
+                daemon=True,
+            ).start()
+            return
+        self.events.put(
+            ("control_error", f"Acción de control desconocida: {action}")
+        )
+
+    def _control_worker(self, action: str) -> None:
+        try:
+            if action == "block":
+                ok = sway_control.block()
+                detail = "entrada bloqueada" if ok else "Sway no disponible"
+            else:
+                ok = sway_control.restore(force=True)
+                detail = "entrada restaurada" if ok else "Sway no disponible"
+        except Exception as exc:  # noqa: BLE001 - se informa al usuario
+            ok, detail = False, str(exc)
+        self._send_line(sway_control.build_ack(action, ok, detail) + "\n")
+        self.events.put(("control_local_done", f"{action}\t{int(ok)}\t{detail}"))
+
+    def _domains_worker(self, subaction: str, payload: str) -> None:
+        """Aplica o consulta la lista de dominios sin bloquear el chat."""
+        try:
+            if subaction == "set":
+                try:
+                    items = json.loads(payload)
+                except ValueError:
+                    items = None
+                if items is None:
+                    self._send_line(
+                        sway_control.build_ack(
+                            "domains", False, "JSON inválido"
+                        )
+                        + "\n"
+                    )
+                    return
+                ok, applied, detail = domain_control.apply(items)
+            else:
+                ok, applied, detail = domain_control.get_state()
+
+            encoded = json.dumps(
+                applied, ensure_ascii=True, separators=(",", ":")
+            )
+            # El estado va antes que el ACK para que un error sea lo último.
+            self._send_line(
+                sway_control.build_domains_state(applied) + "\n"
+            )
+            if subaction == "set" or not ok:
+                self._send_line(
+                    sway_control.build_ack("domains", ok, detail) + "\n"
+                )
+            self.events.put(("domains_state", encoded))
+            if subaction == "set" or not ok:
+                self.events.put(("domains_ack", f"{int(ok)}\t{detail}"))
+        except Exception as exc:  # noqa: BLE001 - se informa al usuario
+            self._send_line(
+                sway_control.build_ack("domains", False, str(exc)) + "\n"
+            )
+            self.events.put(("control_error", f"Dominios: {exc}"))
 
     # ------------------------------------------------------ archivos
     def send_file(self, path: str) -> bool:
@@ -809,6 +926,9 @@ class WayViewerPanel:
         self.var_framedrop = tk.BooleanVar(value=True)
         self.var_tlpktdrop = tk.BooleanVar(value=True)
         self.var_chat_message = tk.StringVar(value="")
+        self.var_domain = tk.StringVar(value="")
+        self.domains = domain_control.load_local()
+        self.domains_dirty = False
 
         self._configure_window()
         self._build_header()
@@ -994,6 +1114,8 @@ class WayViewerPanel:
         self._arrange_client_fields()
         self._arrange_footer()
         self._arrange_file_row()
+        self._arrange_control_row()
+        self._arrange_domain_actions()
         self._arrange_header()
         self._arrange_chat_head()
         self._arrange_chips()
@@ -1010,22 +1132,31 @@ class WayViewerPanel:
         columns = self.columns_frame
         self.tx_card.grid_forget()
         self.cx_card.grid_forget()
+        self.domains_card.grid_forget()
         if self.layout_mode == "wide":
             columns.grid_columnconfigure(0, weight=0, minsize=362)
             columns.grid_columnconfigure(1, weight=1)
             columns.grid_rowconfigure(0, weight=1)
             columns.grid_rowconfigure(1, weight=0)
+            columns.grid_rowconfigure(2, weight=0)
             self.tx_card.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
             self.cx_card.grid(row=0, column=1, sticky="nsew")
+            self.domains_card.grid(
+                row=1, column=0, columnspan=2, sticky="ew", pady=(16, 0)
+            )
         else:
             columns.grid_columnconfigure(0, weight=1, minsize=0)
             columns.grid_columnconfigure(1, weight=0, minsize=0)
             columns.grid_rowconfigure(0, weight=0)
             columns.grid_rowconfigure(1, weight=0)
+            columns.grid_rowconfigure(2, weight=0)
             self.tx_card.grid(
                 row=0, column=0, columnspan=2, sticky="ew", pady=(0, 14)
             )
             self.cx_card.grid(row=1, column=0, columnspan=2, sticky="ew")
+            self.domains_card.grid(
+                row=2, column=0, columnspan=2, sticky="ew", pady=(14, 0)
+            )
 
     def _arrange_client_fields(self) -> None:
         if self.layout_mode == "narrow":
@@ -1070,6 +1201,81 @@ class WayViewerPanel:
             self.file_btn.grid(row=0, column=0, sticky="w")
             self.file_status.grid(
                 row=0, column=1, sticky="ew", padx=(12, 0)
+            )
+
+    def _arrange_control_row(self) -> None:
+        if not hasattr(self, "control_row"):
+            return
+        row = self.control_row
+        self.block_btn.grid_forget()
+        self.unblock_btn.grid_forget()
+        self.control_status.grid_forget()
+        row.grid_columnconfigure(2, weight=1)
+        self.block_btn.grid(row=0, column=0, sticky="w")
+        self.unblock_btn.grid(row=0, column=1, sticky="w", padx=(8, 0))
+        if self.layout_mode == "narrow":
+            self.control_status.grid(
+                row=1, column=0, columnspan=3, sticky="ew", pady=(6, 0)
+            )
+        else:
+            self.control_status.grid(
+                row=0, column=2, sticky="ew", padx=(12, 0)
+            )
+
+    def _arrange_domain_actions(self) -> None:
+        if not hasattr(self, "domain_actions"):
+            return
+        actions = self.domain_actions
+        widgets = (
+            self.domain_entry,
+            self.domain_add_btn,
+            self.domain_remove_btn,
+            self.domain_sync_btn,
+            self.domain_apply_btn,
+            self.domain_status,
+        )
+        for widget in widgets:
+            widget.grid_forget()
+        for column in range(4):
+            actions.grid_columnconfigure(column, weight=0)
+        actions.grid_columnconfigure(0, weight=1)
+
+        if self.layout_mode == "narrow":
+            self.domain_entry.grid(
+                row=0, column=0, columnspan=4, sticky="ew"
+            )
+            self.domain_add_btn.grid(
+                row=1, column=0, sticky="w", pady=(8, 0)
+            )
+            self.domain_remove_btn.grid(
+                row=1, column=1, sticky="w", padx=(8, 0), pady=(8, 0)
+            )
+            self.domain_sync_btn.grid(
+                row=1, column=2, sticky="w", padx=(8, 0), pady=(8, 0)
+            )
+            self.domain_apply_btn.grid(
+                row=1, column=3, sticky="w", padx=(8, 0), pady=(8, 0)
+            )
+            self.domain_status.grid(
+                row=2, column=0, columnspan=4, sticky="ew", pady=(8, 0)
+            )
+        else:
+            self.domain_entry.grid(row=0, column=0, sticky="ew")
+            self.domain_add_btn.grid(
+                row=0, column=1, sticky="w", padx=(8, 0)
+            )
+            self.domain_remove_btn.grid(
+                row=0, column=2, sticky="w", padx=(8, 0)
+            )
+            self.domain_sync_btn.grid(
+                row=1, column=0, sticky="w", pady=(8, 0)
+            )
+            self.domain_apply_btn.grid(
+                row=1, column=1, sticky="w", padx=(8, 0), pady=(8, 0)
+            )
+            self.domain_status.grid(
+                row=1, column=2, columnspan=2, sticky="ew",
+                padx=(12, 0), pady=(8, 0),
             )
 
     def _arrange_header(self) -> None:
@@ -1396,6 +1602,178 @@ class WayViewerPanel:
         )
         self.file_status.grid(row=0, column=1, sticky="ew", padx=(12, 0))
         self._bind_wrap(self.file_status, 110)
+
+        # --- Control remoto de entrada (Sway) ----------------------------
+        control_row = tk.Frame(cx, bg=PANEL)
+        self.control_row = control_row
+        control_row.pack(fill="x", pady=(10, 0))
+        control_row.grid_columnconfigure(2, weight=1)
+
+        self.block_btn = tk.Button(
+            control_row,
+            text="Bloquear entrada",
+            command=lambda: self._send_control("block"),
+            bg="#3d1a1a",
+            fg=RED,
+            activebackground="#552222",
+            activeforeground="#ffffff",
+            disabledforeground="#6e7681",
+            relief="flat",
+            padx=12,
+            pady=5,
+            cursor="hand2",
+            font=("DejaVu Sans", 9, "bold"),
+        )
+        self.block_btn.grid(row=0, column=0, sticky="w")
+
+        self.unblock_btn = tk.Button(
+            control_row,
+            text="Desbloquear entrada",
+            command=lambda: self._send_control("unblock"),
+            bg="#12301c",
+            fg=GREEN,
+            activebackground="#1b4527",
+            activeforeground="#ffffff",
+            disabledforeground="#6e7681",
+            relief="flat",
+            padx=12,
+            pady=5,
+            cursor="hand2",
+            font=("DejaVu Sans", 9, "bold"),
+        )
+        self.unblock_btn.grid(row=0, column=1, sticky="w", padx=(8, 0))
+
+        self.control_status = tk.Label(
+            control_row,
+            text="Control remoto: requiere Sway en el otro equipo.",
+            bg=PANEL,
+            fg=MUTED,
+            font=("DejaVu Sans", 9),
+            anchor="w",
+            justify="left",
+            wraplength=380,
+        )
+        self.control_status.grid(row=0, column=2, sticky="ew", padx=(12, 0))
+        self._bind_wrap(self.control_status, 110)
+
+        # --- Bloqueo web por dominios ------------------------------------
+        domains_card, domains_inner = self._make_card(
+            columns, "BLOQUEO WEB", "Dominios bloqueados", AMBER
+        )
+        self.domains_card = domains_card
+        self._build_domains_card(domains_inner)
+
+    def _build_domains_card(self, inner: tk.Frame) -> None:
+        tk.Label(
+            inner,
+            text=(
+                "Se bloquea el dominio y sus subdominios mediante DNS. "
+                "El resto de HTTPS sigue funcionando. El cliente aplica la "
+                "lista con su helper DNS. Usa el chat solo en una red de "
+                "confianza: no tiene autenticación."
+            ),
+            bg=PANEL,
+            fg=MUTED,
+            font=("DejaVu Sans", 9),
+            anchor="w",
+            justify="left",
+            wraplength=760,
+        ).pack(fill="x", pady=(8, 0))
+
+        list_frame = tk.Frame(
+            inner,
+            bg="#0b0e13",
+            highlightthickness=1,
+            highlightbackground=BORDER,
+        )
+        list_frame.pack(fill="both", expand=True, pady=(8, 0))
+        scroll = tk.Scrollbar(
+            list_frame,
+            bg=PANEL,
+            troughcolor="#0b0e13",
+            activebackground=BORDER,
+            relief="flat",
+            width=12,
+        )
+        scroll.pack(side="right", fill="y")
+        self.domain_listbox = tk.Listbox(
+            list_frame,
+            bg="#0b0e13",
+            fg="#c9d1d9",
+            selectbackground=ACCENT,
+            selectforeground="#ffffff",
+            relief="flat",
+            highlightthickness=0,
+            font=MONO_SMALL,
+            height=6,
+            activestyle="none",
+            exportselection=False,
+            yscrollcommand=scroll.set,
+        )
+        self.domain_listbox.pack(side="left", fill="both", expand=True)
+        scroll.configure(command=self.domain_listbox.yview)
+        self.domain_listbox.bind(
+            "<Delete>", lambda _event: self._remove_domain()
+        )
+
+        actions = tk.Frame(inner, bg=PANEL)
+        self.domain_actions = actions
+        actions.pack(fill="x", pady=(10, 0))
+
+        self.domain_entry = self._dark_entry(actions, self.var_domain, 36)
+        self.domain_entry.bind(
+            "<Return>", lambda _event: self._add_domain()
+        )
+
+        def _button(
+            text: str,
+            command,
+            background: str = CHIP,
+            foreground: str = FG,
+            active: str = BORDER,
+        ) -> tk.Button:
+            return tk.Button(
+                actions,
+                text=text,
+                command=command,
+                bg=background,
+                fg=foreground,
+                activebackground=active,
+                activeforeground=foreground,
+                disabledforeground="#6e7681",
+                relief="flat",
+                padx=12,
+                pady=5,
+                cursor="hand2",
+                font=("DejaVu Sans", 9, "bold"),
+            )
+
+        self.domain_add_btn = _button("Añadir", self._add_domain)
+        self.domain_remove_btn = _button("Quitar", self._remove_domain)
+        self.domain_sync_btn = _button("Recibir lista", self._sync_domains)
+        self.domain_apply_btn = _button(
+            "Aplicar",
+            self._apply_domains,
+            background=ACCENT,
+            foreground="#ffffff",
+            active="#1f6feb",
+        )
+
+        self.domain_status = tk.Label(
+            actions,
+            text="",
+            bg=PANEL,
+            fg=MUTED,
+            font=("DejaVu Sans", 9),
+            anchor="w",
+            justify="left",
+            wraplength=420,
+        )
+        self._bind_wrap(self.domain_status, 110)
+
+        self._refresh_domains()
+        self._set_domain_status(self._domain_summary(), MUTED)
+        self._arrange_domain_actions()
 
     # ------------------------------------------------------- interfaz de red
     def _refresh_interfaces(self, force: bool = False) -> None:
@@ -1733,6 +2111,10 @@ class WayViewerPanel:
             self.chat_entry.configure(state="normal")
             self.chat_send_btn.configure(state="normal")
             self.file_btn.configure(state="normal")
+            self.block_btn.configure(state="normal")
+            self.unblock_btn.configure(state="normal")
+            self.domain_sync_btn.configure(state="normal")
+            self.domain_apply_btn.configure(state="normal")
             self.chat_entry.focus_set()
         else:
             self.client_ip_entry.configure(state="normal")
@@ -1746,8 +2128,15 @@ class WayViewerPanel:
             self.chat_entry.configure(state="disabled")
             self.chat_send_btn.configure(state="disabled")
             self.file_btn.configure(state="disabled")
+            self.block_btn.configure(state="disabled")
+            self.unblock_btn.configure(state="disabled")
+            self.domain_sync_btn.configure(state="disabled")
+            self.domain_apply_btn.configure(state="disabled")
             self.var_chat_message.set("")
             self._set_file_status(f"Se guardan en {FILE_DIR}")
+            self._set_control_status(
+                "Control remoto: conecta el chat para usarlo.", MUTED
+            )
 
     def _send_chat(self, _event: object = None) -> str:
         if not self.chat_connected:
@@ -1766,6 +2155,198 @@ class WayViewerPanel:
                 "error", "No se pudo enviar el mensaje: chat desconectado."
             )
         return "break"
+
+    # ------------------------------------------------- control remoto (Sway)
+    def _set_control_status(self, message: str, color: str = MUTED) -> None:
+        if hasattr(self, "control_status"):
+            self.control_status.configure(text=message, fg=color)
+
+    def _send_control(self, action: str) -> None:
+        if not self.chat_connected:
+            self._set_control_status(
+                "Control remoto: conecta el chat primero.", AMBER
+            )
+            return
+        if not self.chat.send_control(sway_control.build_command(action)):
+            self.chat_connected = False
+            self.chat_connecting = False
+            self._apply_chat_state(False)
+            self._set_control_status(
+                "Control remoto: no se pudo enviar (chat desconectado).", RED
+            )
+            return
+        self._set_control_status(
+            f"Control remoto: enviado «{sway_control.describe(action)}»…", AMBER
+        )
+        self._chat_append(
+            "system", f"Control remoto enviado: {sway_control.describe(action)}"
+        )
+
+    def _local_control_worker(self, action: str) -> None:
+        """Bloquea/desbloquea por señal local (SIGUSR1/SIGUSR2)."""
+        try:
+            if action == "block":
+                ok = sway_control.block()
+                detail = "entrada bloqueada" if ok else "Sway no disponible"
+            else:
+                ok = sway_control.restore(force=True)
+                detail = "entrada restaurada" if ok else "Sway no disponible"
+        except Exception as exc:  # noqa: BLE001 - se informa al usuario
+            ok, detail = False, str(exc)
+        self.chat_events.put(
+            ("control_local_done", f"{action}\t{int(ok)}\t{detail}")
+        )
+
+    # ------------------------------------------- dominios bloqueados (DNS)
+    def _domain_summary(self) -> str:
+        if self.domains:
+            suffix = " (cambios sin aplicar)" if self.domains_dirty else ""
+            return f"{len(self.domains)} dominios en la lista{suffix}."
+        return "No hay dominios bloqueados."
+
+    def _set_domain_status(self, message: str, color: str = MUTED) -> None:
+        if hasattr(self, "domain_status"):
+            self.domain_status.configure(text=message, fg=color)
+
+    def _refresh_domains(self) -> None:
+        if not hasattr(self, "domain_listbox"):
+            return
+        self.domain_listbox.delete(0, "end")
+        for domain in self.domains:
+            self.domain_listbox.insert("end", domain)
+
+    def _add_domain(self) -> None:
+        domain = domain_control.normalize(self.var_domain.get())
+        if domain is None:
+            self._set_domain_status(
+                "Dominio inválido. Ejemplo: ejemplo.com", RED
+            )
+            return
+        if domain in self.domains:
+            self._set_domain_status(
+                f"{domain} ya está en la lista.", AMBER
+            )
+            return
+        if len(self.domains) >= domain_control.MAX_DOMAINS:
+            self._set_domain_status(
+                f"Máximo {domain_control.MAX_DOMAINS} dominios.", RED
+            )
+            return
+
+        self.domains.append(domain)
+        self.domains = sorted(set(self.domains))
+        self.domains_dirty = True
+        try:
+            domain_control.save_local(self.domains)
+        except OSError as exc:
+            self._set_domain_status(f"No se pudo guardar la lista: {exc}", RED)
+            return
+        self.var_domain.set("")
+        self._refresh_domains()
+        try:
+            index = self.domains.index(domain)
+            self.domain_listbox.selection_set(index)
+            self.domain_listbox.see(index)
+        except (ValueError, tk.TclError):
+            pass
+        self._set_domain_status(
+            f"{domain} añadido. Pulsa «Aplicar» para enviarlo.", AMBER
+        )
+
+    def _remove_domain(self) -> None:
+        selection = self.domain_listbox.curselection()
+        if not selection:
+            self._set_domain_status(
+                "Selecciona un dominio para quitarlo.", AMBER
+            )
+            return
+        removed = [
+            self.domains[index]
+            for index in selection
+            if index < len(self.domains)
+        ]
+        if not removed:
+            return
+        for domain in removed:
+            if domain in self.domains:
+                self.domains.remove(domain)
+        self.domains_dirty = True
+        try:
+            domain_control.save_local(self.domains)
+        except OSError as exc:
+            self._set_domain_status(f"No se pudo guardar la lista: {exc}", RED)
+            return
+        self._refresh_domains()
+        self._set_domain_status(
+            f"Quitados {len(removed)} dominios. Pulsa «Aplicar»…", AMBER
+        )
+
+    def _apply_domains(self) -> None:
+        if not self.chat_connected:
+            self._set_domain_status(
+                "Conecta el chat para aplicar la lista.", AMBER
+            )
+            return
+        if not self.chat.send_control(
+            sway_control.build_domains_set(self.domains)
+        ):
+            self.chat_connected = False
+            self.chat_connecting = False
+            self._apply_chat_state(False)
+            self._set_domain_status(
+                "No se pudo enviar la lista: chat desconectado.", RED
+            )
+            return
+        self._set_domain_status(
+            f"Enviando {len(self.domains)} dominios al otro equipo…", AMBER
+        )
+        self._chat_append(
+            "system",
+            f"Bloqueo web: enviando {len(self.domains)} dominios.",
+        )
+
+    def _sync_domains(self) -> None:
+        if not self.chat_connected:
+            self._set_domain_status(
+                "Conecta el chat para recibir la lista.", AMBER
+            )
+            return
+        if not self.chat.send_control(sway_control.build_domains_get()):
+            self.chat_connected = False
+            self.chat_connecting = False
+            self._apply_chat_state(False)
+            self._set_domain_status(
+                "No se pudo pedir la lista: chat desconectado.", RED
+            )
+            return
+        self._set_domain_status(
+            "Solicitando la lista al otro equipo…", AMBER
+        )
+
+    def _apply_domains_state(self, payload: str) -> None:
+        try:
+            items = json.loads(payload)
+        except ValueError:
+            self._set_domain_status("Lista de dominios inválida.", RED)
+            return
+        domains, error = domain_control.validate_list(items)
+        if error:
+            self._set_domain_status(error, RED)
+            return
+        self.domains = domains
+        self.domains_dirty = False
+        try:
+            domain_control.save_local(domains)
+        except OSError:
+            pass
+        self._refresh_domains()
+        self._set_domain_status(
+            f"Lista actual: {len(domains)} dominios bloqueados.", GREEN
+        )
+        self._chat_append(
+            "system",
+            f"Bloqueo web: {len(domains)} dominios en la lista.",
+        )
 
     # ---------------------------------------------------------- archivos
     def _set_file_status(self, message: str, color: str = MUTED) -> None:
@@ -1885,6 +2466,60 @@ class WayViewerPanel:
                     self._chat_append("incoming", payload)
                 elif kind == "chat_system":
                     self._chat_append("system", payload)
+                elif kind == "control_ack":
+                    action, ok, detail = self._split_control_payload(payload)
+                    if ok:
+                        label = "bloqueada" if action == "block" else "desbloqueada"
+                        self._set_control_status(
+                            f"Otro equipo: entrada {label}.", GREEN
+                        )
+                        self._chat_append(
+                            "system",
+                            f"Control remoto: entrada {label} en el otro equipo.",
+                        )
+                    else:
+                        self._set_control_status(
+                            f"Control remoto falló: {detail}", RED
+                        )
+                        self._chat_append(
+                            "error", f"Control remoto falló: {detail}"
+                        )
+                elif kind == "control_local_done":
+                    action, ok, detail = self._split_control_payload(payload)
+                    if ok:
+                        label = "bloqueada" if action == "block" else "desbloqueada"
+                        self._set_control_status(
+                            f"Entrada {label} en este equipo.", GREEN
+                        )
+                        self._chat_append(
+                            "system",
+                            f"Control remoto: entrada {label} en este equipo.",
+                        )
+                    else:
+                        self._set_control_status(
+                            f"No se pudo aplicar el control: {detail}", RED
+                        )
+                elif kind == "control_error":
+                    self._set_control_status(f"Control remoto: {payload}", RED)
+                    self._chat_append("error", f"Control remoto: {payload}")
+                elif kind == "domains_state":
+                    self._apply_domains_state(payload)
+                elif kind == "domains_ack":
+                    ok_text, detail = self._split_payload(payload)
+                    if ok_text == "1":
+                        self._set_domain_status(
+                            f"Dominios aplicados: {detail}", GREEN
+                        )
+                        self._chat_append(
+                            "system", f"Bloqueo web: {detail}"
+                        )
+                    else:
+                        self._set_domain_status(
+                            f"Error de dominios: {detail}", RED
+                        )
+                        self._chat_append(
+                            "error", f"Bloqueo web: {detail}"
+                        )
                 elif kind == "file_pick_done":
                     self.picking_file = False
                     self.file_btn.configure(
@@ -1948,6 +2583,14 @@ class WayViewerPanel:
         if len(parts) == 2:
             return parts[0], parts[1]
         return payload, ""
+
+    @staticmethod
+    def _split_control_payload(payload: str) -> tuple[str, bool, str]:
+        parts = payload.split("\t", 2)
+        while len(parts) < 3:
+            parts.append("")
+        action, ok_text, detail = parts
+        return action, ok_text == "1", detail
 
     # ------------------------------------------------------------ utilidades
     def _set_client_status(self, message: str, color: str = MUTED) -> None:
@@ -2351,6 +2994,14 @@ class WayViewerPanel:
                     messagebox.showerror(
                         "Error de transmisión", payload, parent=self.root
                     )
+                elif kind == "control_local":
+                    # SIGUSR1/SIGUSR2: se ejecuta fuera del hilo de la GUI.
+                    threading.Thread(
+                        target=self._local_control_worker,
+                        args=(payload,),
+                        name="sway-control-local",
+                        daemon=True,
+                    ).start()
         except queue.Empty:
             pass
 
@@ -2431,6 +3082,12 @@ class WayViewerPanel:
         self.chat.stop()
         self._terminate_picker()
         self._terminate_all(grace=grace)
+        # Si esta instancia había bloqueado la entrada, devolverla.
+        try:
+            if sway_control.blocked():
+                sway_control.restore()
+        except Exception:  # noqa: BLE001 - nunca impedir el cierre
+            pass
 
     def install_signal_handlers(self) -> None:
         def _handler(_signum, _frame):
@@ -2440,12 +3097,30 @@ class WayViewerPanel:
             except tk.TclError:
                 pass
 
+        def _control_handler(action: str, _signum, _frame):
+            # Solo encola: el hilo de la GUI lanza swaymsg.
+            self.event_queue.put(("control_local", action))
+
         for name in ("SIGINT", "SIGTERM", "SIGHUP"):
             sig = getattr(signal, name, None)
             if sig is None:
                 continue
             try:
                 signal.signal(sig, _handler)
+            except (ValueError, OSError):
+                pass
+
+        for name, action in (("SIGUSR1", "block"), ("SIGUSR2", "unblock")):
+            sig = getattr(signal, name, None)
+            if sig is None:
+                continue
+            try:
+                signal.signal(
+                    sig,
+                    lambda _s, _f, action=action: _control_handler(
+                        action, _s, _f
+                    ),
+                )
             except (ValueError, OSError):
                 pass
 
@@ -2473,6 +3148,11 @@ class WayViewerPanel:
 
 
 def main() -> int:
+    # Recupera un bloqueo que haya quedado de una ejecución anterior.
+    try:
+        sway_control.heal()
+    except Exception:  # noqa: BLE001 - no impedir el arranque
+        pass
     try:
         root = tk.Tk()
     except tk.TclError as exc:

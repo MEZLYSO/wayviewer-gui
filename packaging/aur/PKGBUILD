@@ -24,6 +24,10 @@ mkdir -p "${DEST}/python" "${DEST}/bin"
 install -m 0755 "${BIN}" "${DEST}/bin/wayviewer"
 install -m 0644 "${ROOT}/python/wayviewer_gui.py" "${DEST}/python/"
 install -m 0644 "${ROOT}/python/wayviewer_relay.py" "${DEST}/python/"
+install -m 0644 "${ROOT}/python/sway_control.py" "${DEST}/python/"
+install -m 0644 "${ROOT}/python/domain_control.py" "${DEST}/python/"
+install -m 0644 "${ROOT}/python/wayviewer_dns_helper.py" "${DEST}/python/"
+install -m 0755 "${ROOT}/packaging/install-dns-helper.sh" "${DEST}/"
 install -m 0755 "${ROOT}/run.sh" "${DEST}/"
 
 cat > "${DEST}/README.txt" <<EOF
@@ -49,4 +53,3 @@ mkdir -p "${OUT}"
 tar -C "${STAGE}" -czf "${OUT}/${PKG}.tar.gz" "${PKG}"
 sha256sum "${OUT}/${PKG}.tar.gz" > "${OUT}/${PKG}.tar.gz.sha256"
 echo "Generado: ${OUT}/${PKG}.tar.gz"
-" path="/home/maury/git/app_monitoreo/packaging/build-release.sh
