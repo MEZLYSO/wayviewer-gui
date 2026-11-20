@@ -19,7 +19,10 @@ install -m 0644 "${ROOT}/python/wayviewer_dns_helper.py" "${DEST}/python/"
 install -m 0755 "${ROOT}/packaging/install-dns-helper.sh" "${DEST}/"
 install -m 0755 "${ROOT}/run.sh" "${DEST}/"
 cat > "${DEST}/README.txt" <<README
-WayViewer ${VERSION} (${KIND})
+WayViewer ${VERSION} (${KIND}) - Cliente
+
+Esta es la versión cliente: recibe la lista de dominios y las órdenes de
+bloqueo de entrada desde el panel de administración y las aplica localmente.
 
 Dependencias del sistema:
   - Python 3 + tkinter
@@ -31,7 +34,7 @@ Dependencias del sistema:
 Ejecutar:
   ./run.sh
 
-Bloqueo web opcional (una vez, como root):
+Bloqueo web del cliente (una vez, como root; requiere unbound):
   sudo ./install-dns-helper.sh \$USER
 
 Variables útiles:

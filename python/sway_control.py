@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Bloqueo de entrada en Sway y protocolo de control remoto.
+"""Bloqueo de entrada en Sway para el cliente WayViewer.
 
 El equipo que recibe la transmisión (el «cliente») es quien ejecuta
-``swaymsg`` y necesita ``SWAYSOCK``. El equipo que administra no necesita
-Sway ni ``SWAYSOCK``: solo envía una línea de control por el chat TCP que ya
-existe y el cliente ejecuta el bloqueo/desbloqueo localmente.
+``swaymsg`` y necesita ``SWAYSOCK``. El panel de administración no necesita
+Sway: solo envía una línea de control por el chat TCP y este equipo ejecuta
+el bloqueo/desbloqueo localmente y responde con un ACK.
 
 Formato de una línea de control (terminada en ``\\n``)::
 
@@ -151,27 +151,12 @@ def blocked() -> bool:
 
 
 # --------------------------------------------------------------- protocolo
-def build_command(action: str) -> str:
-    """Línea para pedir «block» o «unblock» al otro equipo."""
-    return f"{MAGIC}\t{action}"
-
-
-def build_domains_get() -> str:
-    """Pide al otro equipo su lista de dominios bloqueados."""
-    return f"{MAGIC}\tdomains\tget"
-
-
 def _domains_json(domains: list[str]) -> str:
     return json.dumps(domains, ensure_ascii=True, separators=(",", ":"))
 
 
-def build_domains_set(domains: list[str]) -> str:
-    """Reemplaza la lista de dominios bloqueados del otro equipo."""
-    return f"{MAGIC}\tdomains\tset\t{_domains_json(domains)}"
-
-
 def build_domains_state(domains: list[str]) -> str:
-    """Envía la lista aplicada actualmente."""
+    """Envía al administrador la lista aplicada actualmente."""
     return f"{MAGIC}\tdomains\tstate\t{_domains_json(domains)}"
 
 
@@ -192,10 +177,3 @@ def parse(line: str) -> tuple[dict | None, str]:
     if not rest:
         return None, "formato inválido"
     return {"fields": rest.split("\t")}, ""
-
-
-def describe(action: str) -> str:
-    return {
-        "block": "bloquear la entrada",
-        "unblock": "desbloquear la entrada",
-    }.get(action, action)
