@@ -9,9 +9,8 @@ Sección «Conectar»:
   puerto y varios parámetros. Incluye un chat TCP bidireccional y envío de
   archivos; lo recibido se guarda en ~/wayviewer.
 
-La versión de administración edita y envía la lista de dominios bloqueados
-y las órdenes de bloqueo de entrada al cliente. No ejecuta ``swaymsg`` ni
-escribe la configuración de unbound: eso ocurre en el equipo cliente.
+La versión de administración envía las órdenes de bloqueo de entrada y ping
+al cliente. No ejecuta ``swaymsg`` ni modifica nftables localmente.
 """
 
 from __future__ import annotations
@@ -19,7 +18,6 @@ from __future__ import annotations
 import base64
 import binascii
 import ipaddress
-import json
 import os
 import queue
 import shutil
@@ -33,7 +31,6 @@ import uuid
 from collections import deque
 
 import sway_control
-import domain_control
 
 try:
     import tkinter as tk
@@ -524,24 +521,8 @@ class TcpChat:
             ok = len(fields) > 2 and fields[2] == "ok"
             remote_action = fields[1] if len(fields) > 1 else ""
             detail = fields[3] if len(fields) > 3 else ""
-            if remote_action == "domains":
-                self.events.put(("domains_ack", f"{int(ok)}\t{detail}"))
-            else:
-                self.events.put(
-                    ("control_ack", f"{remote_action}\t{int(ok)}\t{detail}")
-                )
-            return
-        if action == "domains":
-            subaction = fields[1] if len(fields) > 1 else ""
-            if subaction == "state":
-                payload = fields[2] if len(fields) > 2 else "[]"
-                self.events.put(("domains_state", payload))
-                return
             self.events.put(
-                (
-                    "control_error",
-                    "Este equipo administra; no aplica listas de dominios.",
-                )
+                ("control_ack", f"{remote_action}\t{int(ok)}\t{detail}")
             )
             return
         if action in ("block", "unblock"):
@@ -866,9 +847,6 @@ class WayViewerPanel:
         self.var_framedrop = tk.BooleanVar(value=True)
         self.var_tlpktdrop = tk.BooleanVar(value=True)
         self.var_chat_message = tk.StringVar(value="")
-        self.var_domain = tk.StringVar(value="")
-        self.domains = domain_control.load_local()
-        self.domains_dirty = False
 
         self._configure_window()
         self._build_header()
@@ -918,7 +896,7 @@ class WayViewerPanel:
         ).pack(anchor="w")
         self.header_subtitle = tk.Label(
             words,
-            text="Administración: controles y dominios",
+            text="Administración: controles de entrada y ping",
             bg=HEADER,
             fg=MUTED,
             font=("DejaVu Sans", 9),
@@ -1055,7 +1033,6 @@ class WayViewerPanel:
         self._arrange_footer()
         self._arrange_file_row()
         self._arrange_control_row()
-        self._arrange_domain_actions()
         self._arrange_header()
         self._arrange_chat_head()
         self._arrange_chips()
@@ -1072,7 +1049,6 @@ class WayViewerPanel:
         columns = self.columns_frame
         self.tx_card.grid_forget()
         self.cx_card.grid_forget()
-        self.domains_card.grid_forget()
         if self.layout_mode == "wide":
             columns.grid_columnconfigure(0, weight=0, minsize=362)
             columns.grid_columnconfigure(1, weight=1)
@@ -1081,9 +1057,6 @@ class WayViewerPanel:
             columns.grid_rowconfigure(2, weight=0)
             self.tx_card.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
             self.cx_card.grid(row=0, column=1, sticky="nsew")
-            self.domains_card.grid(
-                row=1, column=0, columnspan=2, sticky="ew", pady=(16, 0)
-            )
         else:
             columns.grid_columnconfigure(0, weight=1, minsize=0)
             columns.grid_columnconfigure(1, weight=0, minsize=0)
@@ -1094,9 +1067,6 @@ class WayViewerPanel:
                 row=0, column=0, columnspan=2, sticky="ew", pady=(0, 14)
             )
             self.cx_card.grid(row=1, column=0, columnspan=2, sticky="ew")
-            self.domains_card.grid(
-                row=2, column=0, columnspan=2, sticky="ew", pady=(14, 0)
-            )
 
     def _arrange_client_fields(self) -> None:
         if self.layout_mode == "narrow":
@@ -1166,69 +1136,13 @@ class WayViewerPanel:
                 row=0, column=4, sticky="ew", padx=(12, 0)
             )
 
-    def _arrange_domain_actions(self) -> None:
-        if not hasattr(self, "domain_actions"):
-            return
-        actions = self.domain_actions
-        widgets = (
-            self.domain_entry,
-            self.domain_add_btn,
-            self.domain_remove_btn,
-            self.domain_sync_btn,
-            self.domain_apply_btn,
-            self.domain_status,
-        )
-        for widget in widgets:
-            widget.grid_forget()
-        for column in range(4):
-            actions.grid_columnconfigure(column, weight=0)
-        actions.grid_columnconfigure(0, weight=1)
-
-        if self.layout_mode == "narrow":
-            self.domain_entry.grid(
-                row=0, column=0, columnspan=4, sticky="ew"
-            )
-            self.domain_add_btn.grid(
-                row=1, column=0, sticky="w", pady=(8, 0)
-            )
-            self.domain_remove_btn.grid(
-                row=1, column=1, sticky="w", padx=(8, 0), pady=(8, 0)
-            )
-            self.domain_sync_btn.grid(
-                row=1, column=2, sticky="w", padx=(8, 0), pady=(8, 0)
-            )
-            self.domain_apply_btn.grid(
-                row=1, column=3, sticky="w", padx=(8, 0), pady=(8, 0)
-            )
-            self.domain_status.grid(
-                row=2, column=0, columnspan=4, sticky="ew", pady=(8, 0)
-            )
-        else:
-            self.domain_entry.grid(row=0, column=0, sticky="ew")
-            self.domain_add_btn.grid(
-                row=0, column=1, sticky="w", padx=(8, 0)
-            )
-            self.domain_remove_btn.grid(
-                row=0, column=2, sticky="w", padx=(8, 0)
-            )
-            self.domain_sync_btn.grid(
-                row=1, column=0, sticky="w", pady=(8, 0)
-            )
-            self.domain_apply_btn.grid(
-                row=1, column=1, sticky="w", padx=(8, 0), pady=(8, 0)
-            )
-            self.domain_status.grid(
-                row=1, column=2, columnspan=2, sticky="ew",
-                padx=(12, 0), pady=(8, 0),
-            )
-
     def _arrange_header(self) -> None:
         narrow = self.layout_mode == "narrow"
         self.header_subtitle.configure(
             text=(
                 "Administración · controles"
                 if narrow
-                else "Administración: controles y dominios"
+                else "Administración: controles de entrada y ping"
             )
         )
         self.refresh_btn.configure(
@@ -1633,126 +1547,6 @@ class WayViewerPanel:
         )
         self.control_status.grid(row=0, column=2, sticky="ew", padx=(12, 0))
         self._bind_wrap(self.control_status, 110)
-
-        # --- Bloqueo web por dominios ------------------------------------
-        domains_card, domains_inner = self._make_card(
-            columns, "BLOQUEO WEB", "Dominios bloqueados", AMBER
-        )
-        self.domains_card = domains_card
-        self._build_domains_card(domains_inner)
-
-    def _build_domains_card(self, inner: tk.Frame) -> None:
-        tk.Label(
-            inner,
-            text=(
-                "Edita la lista aquí y envíala al cliente: se bloquea el "
-                "dominio y sus subdominios mediante DNS y el resto de HTTPS "
-                "sigue funcionando. El equipo cliente aplica la lista con su "
-                "helper local. Usa el chat solo en una red de confianza: no "
-                "tiene autenticación."
-            ),
-            bg=PANEL,
-            fg=MUTED,
-            font=("DejaVu Sans", 9),
-            anchor="w",
-            justify="left",
-            wraplength=760,
-        ).pack(fill="x", pady=(8, 0))
-
-        list_frame = tk.Frame(
-            inner,
-            bg="#0b0e13",
-            highlightthickness=1,
-            highlightbackground=BORDER,
-        )
-        list_frame.pack(fill="both", expand=True, pady=(8, 0))
-        scroll = tk.Scrollbar(
-            list_frame,
-            bg=PANEL,
-            troughcolor="#0b0e13",
-            activebackground=BORDER,
-            relief="flat",
-            width=12,
-        )
-        scroll.pack(side="right", fill="y")
-        self.domain_listbox = tk.Listbox(
-            list_frame,
-            bg="#0b0e13",
-            fg="#c9d1d9",
-            selectbackground=ACCENT,
-            selectforeground="#ffffff",
-            relief="flat",
-            highlightthickness=0,
-            font=MONO_SMALL,
-            height=6,
-            activestyle="none",
-            exportselection=False,
-            yscrollcommand=scroll.set,
-        )
-        self.domain_listbox.pack(side="left", fill="both", expand=True)
-        scroll.configure(command=self.domain_listbox.yview)
-        self.domain_listbox.bind(
-            "<Delete>", lambda _event: self._remove_domain()
-        )
-
-        actions = tk.Frame(inner, bg=PANEL)
-        self.domain_actions = actions
-        actions.pack(fill="x", pady=(10, 0))
-
-        self.domain_entry = self._dark_entry(actions, self.var_domain, 36)
-        self.domain_entry.bind(
-            "<Return>", lambda _event: self._add_domain()
-        )
-
-        def _button(
-            text: str,
-            command,
-            background: str = CHIP,
-            foreground: str = FG,
-            active: str = BORDER,
-        ) -> tk.Button:
-            return tk.Button(
-                actions,
-                text=text,
-                command=command,
-                bg=background,
-                fg=foreground,
-                activebackground=active,
-                activeforeground=foreground,
-                disabledforeground="#6e7681",
-                relief="flat",
-                padx=12,
-                pady=5,
-                cursor="hand2",
-                font=("DejaVu Sans", 9, "bold"),
-            )
-
-        self.domain_add_btn = _button("Añadir", self._add_domain)
-        self.domain_remove_btn = _button("Quitar", self._remove_domain)
-        self.domain_sync_btn = _button("Recibir lista", self._sync_domains)
-        self.domain_apply_btn = _button(
-            "Aplicar",
-            self._apply_domains,
-            background=ACCENT,
-            foreground="#ffffff",
-            active="#1f6feb",
-        )
-
-        self.domain_status = tk.Label(
-            actions,
-            text="",
-            bg=PANEL,
-            fg=MUTED,
-            font=("DejaVu Sans", 9),
-            anchor="w",
-            justify="left",
-            wraplength=420,
-        )
-        self._bind_wrap(self.domain_status, 110)
-
-        self._refresh_domains()
-        self._set_domain_status(self._domain_summary(), MUTED)
-        self._arrange_domain_actions()
 
     # ------------------------------------------------------- interfaz de red
     def _refresh_interfaces(self, force: bool = False) -> None:
@@ -2184,157 +1978,6 @@ class WayViewerPanel:
         self._set_control_status(f"Control remoto: enviado «{description}»…", AMBER)
         self._chat_append("system", f"Control remoto enviado: {description}")
 
-    # ------------------------------------------- dominios bloqueados (DNS)
-    def _domain_summary(self) -> str:
-        if self.domains:
-            suffix = " (cambios sin aplicar)" if self.domains_dirty else ""
-            return f"{len(self.domains)} dominios en la lista{suffix}."
-        return "No hay dominios bloqueados."
-
-    def _set_domain_status(self, message: str, color: str = MUTED) -> None:
-        if hasattr(self, "domain_status"):
-            self.domain_status.configure(text=message, fg=color)
-
-    def _refresh_domains(self) -> None:
-        if not hasattr(self, "domain_listbox"):
-            return
-        self.domain_listbox.delete(0, "end")
-        for domain in self.domains:
-            self.domain_listbox.insert("end", domain)
-
-    def _add_domain(self) -> None:
-        domain = domain_control.normalize(self.var_domain.get())
-        if domain is None:
-            self._set_domain_status(
-                "Dominio inválido. Ejemplo: ejemplo.com", RED
-            )
-            return
-        if domain in self.domains:
-            self._set_domain_status(
-                f"{domain} ya está en la lista.", AMBER
-            )
-            return
-        if len(self.domains) >= domain_control.MAX_DOMAINS:
-            self._set_domain_status(
-                f"Máximo {domain_control.MAX_DOMAINS} dominios.", RED
-            )
-            return
-
-        self.domains.append(domain)
-        self.domains = sorted(set(self.domains))
-        self.domains_dirty = True
-        try:
-            domain_control.save_local(self.domains)
-        except OSError as exc:
-            self._set_domain_status(f"No se pudo guardar la lista: {exc}", RED)
-            return
-        self.var_domain.set("")
-        self._refresh_domains()
-        try:
-            index = self.domains.index(domain)
-            self.domain_listbox.selection_set(index)
-            self.domain_listbox.see(index)
-        except (ValueError, tk.TclError):
-            pass
-        self._set_domain_status(
-            f"{domain} añadido. Pulsa «Aplicar» para enviarlo.", AMBER
-        )
-
-    def _remove_domain(self) -> None:
-        selection = self.domain_listbox.curselection()
-        if not selection:
-            self._set_domain_status(
-                "Selecciona un dominio para quitarlo.", AMBER
-            )
-            return
-        removed = [
-            self.domains[index]
-            for index in selection
-            if index < len(self.domains)
-        ]
-        if not removed:
-            return
-        for domain in removed:
-            if domain in self.domains:
-                self.domains.remove(domain)
-        self.domains_dirty = True
-        try:
-            domain_control.save_local(self.domains)
-        except OSError as exc:
-            self._set_domain_status(f"No se pudo guardar la lista: {exc}", RED)
-            return
-        self._refresh_domains()
-        self._set_domain_status(
-            f"Quitados {len(removed)} dominios. Pulsa «Aplicar»…", AMBER
-        )
-
-    def _apply_domains(self) -> None:
-        if not self.chat_connected:
-            self._set_domain_status(
-                "Conecta el chat para aplicar la lista.", AMBER
-            )
-            return
-        if not self.chat.send_control(
-            sway_control.build_domains_set(self.domains)
-        ):
-            self.chat_connected = False
-            self.chat_connecting = False
-            self._apply_chat_state(False)
-            self._set_domain_status(
-                "No se pudo enviar la lista: chat desconectado.", RED
-            )
-            return
-        self._set_domain_status(
-            f"Enviando {len(self.domains)} dominios al otro equipo…", AMBER
-        )
-        self._chat_append(
-            "system",
-            f"Bloqueo web: enviando {len(self.domains)} dominios.",
-        )
-
-    def _sync_domains(self) -> None:
-        if not self.chat_connected:
-            self._set_domain_status(
-                "Conecta el chat para recibir la lista.", AMBER
-            )
-            return
-        if not self.chat.send_control(sway_control.build_domains_get()):
-            self.chat_connected = False
-            self.chat_connecting = False
-            self._apply_chat_state(False)
-            self._set_domain_status(
-                "No se pudo pedir la lista: chat desconectado.", RED
-            )
-            return
-        self._set_domain_status(
-            "Solicitando la lista al otro equipo…", AMBER
-        )
-
-    def _apply_domains_state(self, payload: str) -> None:
-        try:
-            items = json.loads(payload)
-        except ValueError:
-            self._set_domain_status("Lista de dominios inválida.", RED)
-            return
-        domains, error = domain_control.validate_list(items)
-        if error:
-            self._set_domain_status(error, RED)
-            return
-        self.domains = domains
-        self.domains_dirty = False
-        try:
-            domain_control.save_local(domains)
-        except OSError:
-            pass
-        self._refresh_domains()
-        self._set_domain_status(
-            f"Lista actual: {len(domains)} dominios bloqueados.", GREEN
-        )
-        self._chat_append(
-            "system",
-            f"Bloqueo web: {len(domains)} dominios en la lista.",
-        )
-
     # ---------------------------------------------------------- archivos
     def _set_file_status(self, message: str, color: str = MUTED) -> None:
         if hasattr(self, "file_status"):
@@ -2479,24 +2122,6 @@ class WayViewerPanel:
                 elif kind == "control_error":
                     self._set_control_status(f"Control remoto: {payload}", RED)
                     self._chat_append("error", f"Control remoto: {payload}")
-                elif kind == "domains_state":
-                    self._apply_domains_state(payload)
-                elif kind == "domains_ack":
-                    ok_text, detail = self._split_payload(payload)
-                    if ok_text == "1":
-                        self._set_domain_status(
-                            f"Dominios aplicados: {detail}", GREEN
-                        )
-                        self._chat_append(
-                            "system", f"Bloqueo web: {detail}"
-                        )
-                    else:
-                        self._set_domain_status(
-                            f"Error de dominios: {detail}", RED
-                        )
-                        self._chat_append(
-                            "error", f"Bloqueo web: {detail}"
-                        )
                 elif kind == "file_pick_done":
                     self.picking_file = False
                     self.file_btn.configure(

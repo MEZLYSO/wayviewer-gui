@@ -14,14 +14,12 @@ install -m 0755 "${BIN}" "${DEST}/bin/wayviewer"
 install -m 0644 "${ROOT}/python/wayviewer_gui.py" "${DEST}/python/"
 install -m 0644 "${ROOT}/python/wayviewer_relay.py" "${DEST}/python/"
 install -m 0644 "${ROOT}/python/sway_control.py" "${DEST}/python/"
-install -m 0644 "${ROOT}/python/domain_control.py" "${DEST}/python/"
 install -m 0755 "${ROOT}/run.sh" "${DEST}/"
 cat > "${DEST}/README.txt" <<README
 WayViewer ${VERSION} (${KIND}) - Administración
 
-Esta es la versión de administración: edita y envía la lista de dominios y
-las órdenes de bloqueo al equipo cliente. No necesita unbound ni el helper
-DNS; el bloqueo se ejecuta en el cliente.
+Esta es la versión de administración: envía las órdenes de bloqueo de entrada
+y ping al equipo cliente. No necesita nftables ni un helper local.
 
 Dependencias del sistema:
   - Python 3 + tkinter
