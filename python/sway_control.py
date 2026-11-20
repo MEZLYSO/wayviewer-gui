@@ -56,3 +56,11 @@ def describe(action: str) -> str:
         "block": "bloquear la entrada",
         "unblock": "desbloquear la entrada",
     }.get(action, action)
+
+
+def build_ping_command(blocked: bool) -> str:
+    return f"{MAGIC}\t{'ping-block' if blocked else 'ping-unblock'}"
+
+
+def describe_ping(blocked: bool) -> str:
+    return "bloquear el ping" if blocked else "permitir el ping"

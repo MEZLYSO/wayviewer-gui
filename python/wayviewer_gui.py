@@ -1149,17 +1149,21 @@ class WayViewerPanel:
         row = self.control_row
         self.block_btn.grid_forget()
         self.unblock_btn.grid_forget()
+        self.ping_block_btn.grid_forget()
+        self.ping_unblock_btn.grid_forget()
         self.control_status.grid_forget()
-        row.grid_columnconfigure(2, weight=1)
+        row.grid_columnconfigure(4, weight=1)
         self.block_btn.grid(row=0, column=0, sticky="w")
         self.unblock_btn.grid(row=0, column=1, sticky="w", padx=(8, 0))
+        self.ping_block_btn.grid(row=0, column=2, sticky="w", padx=(8, 0))
+        self.ping_unblock_btn.grid(row=0, column=3, sticky="w", padx=(8, 0))
         if self.layout_mode == "narrow":
             self.control_status.grid(
-                row=1, column=0, columnspan=3, sticky="ew", pady=(6, 0)
+                row=1, column=0, columnspan=5, sticky="ew", pady=(6, 0)
             )
         else:
             self.control_status.grid(
-                row=0, column=2, sticky="ew", padx=(12, 0)
+                row=0, column=4, sticky="ew", padx=(12, 0)
             )
 
     def _arrange_domain_actions(self) -> None:
@@ -1582,6 +1586,40 @@ class WayViewerPanel:
             font=("DejaVu Sans", 9, "bold"),
         )
         self.unblock_btn.grid(row=0, column=1, sticky="w", padx=(8, 0))
+
+        self.ping_block_btn = tk.Button(
+            control_row,
+            text="Bloquear ping",
+            command=lambda: self._send_ping_control(True),
+            bg="#3d1a1a",
+            fg=RED,
+            activebackground="#552222",
+            activeforeground="#ffffff",
+            disabledforeground="#6e7681",
+            relief="flat",
+            padx=12,
+            pady=5,
+            cursor="hand2",
+            font=("DejaVu Sans", 9, "bold"),
+        )
+        self.ping_block_btn.grid(row=0, column=2, sticky="w", padx=(8, 0))
+
+        self.ping_unblock_btn = tk.Button(
+            control_row,
+            text="Permitir ping",
+            command=lambda: self._send_ping_control(False),
+            bg="#12301c",
+            fg=GREEN,
+            activebackground="#1b4527",
+            activeforeground="#ffffff",
+            disabledforeground="#6e7681",
+            relief="flat",
+            padx=12,
+            pady=5,
+            cursor="hand2",
+            font=("DejaVu Sans", 9, "bold"),
+        )
+        self.ping_unblock_btn.grid(row=0, column=3, sticky="w", padx=(8, 0))
 
         self.control_status = tk.Label(
             control_row,
@@ -2054,6 +2092,8 @@ class WayViewerPanel:
             self.file_btn.configure(state="normal")
             self.block_btn.configure(state="normal")
             self.unblock_btn.configure(state="normal")
+            self.ping_block_btn.configure(state="normal")
+            self.ping_unblock_btn.configure(state="normal")
             self.domain_sync_btn.configure(state="normal")
             self.domain_apply_btn.configure(state="normal")
             self.chat_entry.focus_set()
@@ -2071,6 +2111,8 @@ class WayViewerPanel:
             self.file_btn.configure(state="disabled")
             self.block_btn.configure(state="disabled")
             self.unblock_btn.configure(state="disabled")
+            self.ping_block_btn.configure(state="disabled")
+            self.ping_unblock_btn.configure(state="disabled")
             self.domain_sync_btn.configure(state="disabled")
             self.domain_apply_btn.configure(state="disabled")
             self.var_chat_message.set("")
@@ -2123,6 +2165,24 @@ class WayViewerPanel:
         self._chat_append(
             "system", f"Control remoto enviado: {sway_control.describe(action)}"
         )
+
+    def _send_ping_control(self, blocked: bool) -> None:
+        if not self.chat_connected:
+            self._set_control_status(
+                "Control remoto: conecta el chat primero.", AMBER
+            )
+            return
+        if not self.chat.send_control(sway_control.build_ping_command(blocked)):
+            self.chat_connected = False
+            self.chat_connecting = False
+            self._apply_chat_state(False)
+            self._set_control_status(
+                "Control remoto: no se pudo enviar (chat desconectado).", RED
+            )
+            return
+        description = sway_control.describe_ping(blocked)
+        self._set_control_status(f"Control remoto: enviado «{description}»…", AMBER)
+        self._chat_append("system", f"Control remoto enviado: {description}")
 
     # ------------------------------------------- dominios bloqueados (DNS)
     def _domain_summary(self) -> str:
@@ -2396,7 +2456,12 @@ class WayViewerPanel:
                 elif kind == "control_ack":
                     action, ok, detail = self._split_control_payload(payload)
                     if ok:
-                        label = "bloqueada" if action == "block" else "desbloqueada"
+                        if action == "ping-block":
+                            label = "ping bloqueado"
+                        elif action == "ping-unblock":
+                            label = "ping permitido"
+                        else:
+                            label = "bloqueada" if action == "block" else "desbloqueada"
                         self._set_control_status(
                             f"Equipo cliente: entrada {label}.", GREEN
                         )
