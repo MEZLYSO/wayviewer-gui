@@ -20,6 +20,9 @@ command -v visudo >/dev/null 2>&1 || { echo "Falta visudo." >&2; exit 1; }
 command -v nft >/dev/null 2>&1 || { echo "Instala nftables: sudo pacman -S nftables." >&2; exit 1; }
 command -v getent >/dev/null 2>&1 || { echo "Falta getent." >&2; exit 1; }
 
+# Elimina la tabla antigua que se usaba para bloquear dominios por IP.
+nft delete table inet wayviewer 2>/dev/null || true
+
 # Limpia instalaciones anteriores del helper DNS/hosts de WayViewer.
 rm -f /usr/local/libexec/wayviewer-dns \
     /usr/local/libexec/wayviewer-hosts \
