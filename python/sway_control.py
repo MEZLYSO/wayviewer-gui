@@ -160,6 +160,22 @@ def describe_ping(blocked: bool) -> str:
     return "bloquear el ping" if blocked else "permitir el ping"
 
 
+def build_hosts_get() -> str:
+    return f"{MAGIC}\thosts\tget"
+
+
+def build_hosts_set(domains: list[str]) -> str:
+    import json
+    payload = json.dumps(domains, ensure_ascii=True, separators=(",", ":"))
+    return f"{MAGIC}\thosts\tset\t{payload}"
+
+
+def build_hosts_state(domains: list[str]) -> str:
+    import json
+    payload = json.dumps(domains, ensure_ascii=True, separators=(",", ":"))
+    return f"{MAGIC}\thosts\tstate\t{payload}"
+
+
 def build_ack(action: str, ok: bool, detail: str = "") -> str:
     """Línea de confirmación que devuelve el equipo que ejecutó el cambio."""
     clean = " ".join(str(detail).replace("\t", " ").splitlines())[:200]

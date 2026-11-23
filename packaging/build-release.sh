@@ -15,7 +15,10 @@ install -m 0644 "${ROOT}/python/wayviewer_gui.py" "${DEST}/python/"
 install -m 0644 "${ROOT}/python/wayviewer_relay.py" "${DEST}/python/"
 install -m 0644 "${ROOT}/python/sway_control.py" "${DEST}/python/"
 install -m 0755 "${ROOT}/python/wayviewer_nft_helper.py" "${DEST}/python/"
+install -m 0755 "${ROOT}/python/wayviewer_hosts_helper.py" "${DEST}/python/"
+install -m 0644 "${ROOT}/python/hosts_control.py" "${DEST}/python/"
 install -m 0755 "${ROOT}/packaging/install-nft-helper.sh" "${DEST}/"
+install -m 0755 "${ROOT}/packaging/install-hosts-helper.sh" "${DEST}/"
 install -m 0755 "${ROOT}/run.sh" "${DEST}/"
 cat > "${DEST}/README.txt" <<README
 WayViewer ${VERSION} (${KIND}) - Cliente
@@ -32,11 +35,12 @@ Dependencias del sistema:
 Ejecutar:
   ./run.sh
 
-Bloqueo de ping del cliente mediante nftables (una vez, como root):
+Bloqueo de ping y hosts del cliente (una vez, como root):
   sudo pacman -S nftables
   sudo ./install-nft-helper.sh \$USER
+  sudo ./install-hosts-helper.sh \$USER
 
-El cliente pide la contraseña local al cambiar el bloqueo de ping.
+El cliente pide la contraseña local al cambiar el bloqueo.
 
 Variables útiles:
   WAYVIEWER_BIN=/ruta/alternativa/wayviewer

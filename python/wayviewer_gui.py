@@ -18,6 +18,7 @@ from __future__ import annotations
 import base64
 import binascii
 import ipaddress
+import json
 import os
 import queue
 import shutil
@@ -32,6 +33,7 @@ from collections import deque
 
 import sway_control
 import ping_control
+import hosts_control
 
 try:
     import tkinter as tk
@@ -542,6 +544,20 @@ class TcpChat:
                 daemon=True,
             ).start()
             return
+        if action == "hosts":
+            subaction = fields[1] if len(fields) > 1 else ""
+            if subaction == "state":
+                self.events.put(("hosts_state", fields[2] if len(fields) > 2 else "[]"))
+            elif subaction in ("get", "set"):
+                threading.Thread(
+                    target=self._hosts_worker,
+                    args=(subaction, fields[2] if len(fields) > 2 else "[]"),
+                    name="hosts-control",
+                    daemon=True,
+                ).start()
+            else:
+                self.events.put(("control_error", f"Acción hosts desconocida: {subaction}"))
+            return
         self.events.put(
             ("control_error", f"Acción de control desconocida: {action}")
         )
@@ -593,6 +609,34 @@ class TcpChat:
         if not ok:
             self.clear_password()
         self._send_line(sway_control.build_ack(action, ok, detail) + "\n")
+
+    def _hosts_worker(self, subaction: str, payload: str) -> None:
+        try:
+            if subaction == "set":
+                try:
+                    items = json.loads(payload)
+                except ValueError:
+                    items = None
+                if items is None:
+                    self._send_line(sway_control.build_ack("hosts", False, "JSON inválido") + "\n")
+                    return
+                password = self._request_password()
+                if password is None:
+                    self._send_line(sway_control.build_ack("hosts", False, "operación cancelada") + "\n")
+                    return
+                ok, applied, detail = hosts_control.apply(items, password)
+            else:
+                ok, applied, detail = hosts_control.get_state()
+            if not ok:
+                self.clear_password()
+            self._send_line(sway_control.build_hosts_state(applied) + "\n")
+            self._send_line(sway_control.build_ack("hosts", ok, detail) + "\n")
+            self.events.put(("hosts_state", json.dumps(applied, ensure_ascii=True)))
+            self.events.put(("hosts_ack", f"{int(ok)}\t{detail}"))
+        except Exception as exc:  # noqa: BLE001
+            self.clear_password()
+            self._send_line(sway_control.build_ack("hosts", False, str(exc)) + "\n")
+            self.events.put(("control_error", f"Hosts: {exc}"))
 
     # ------------------------------------------------------ archivos
     def send_file(self, path: str) -> bool:
@@ -1509,6 +1553,59 @@ class WayViewerPanel:
         self.control_status.pack(fill="x", pady=(10, 0))
         self._bind_wrap(self.control_status, 110)
 
+        # --- Lista de hosts bloqueados recibida --------------------------
+        hosts_frame = tk.Frame(
+            cx, bg="#0b0e13", highlightthickness=1, highlightbackground=BORDER
+        )
+        hosts_frame.pack(fill="both", expand=True, pady=(10, 0))
+        tk.Label(
+            hosts_frame, text="DOMINIOS EN /etc/hosts", bg="#0b0e13",
+            fg=MUTED, font=("DejaVu Sans", 8, "bold"),
+        ).pack(anchor="w", padx=8, pady=(6, 2))
+        hosts_scroll = tk.Scrollbar(hosts_frame)
+        hosts_scroll.pack(side="right", fill="y")
+        self.hosts_listbox = tk.Listbox(
+            hosts_frame, bg="#0b0e13", fg=FG, relief="flat",
+            highlightthickness=0, height=5, yscrollcommand=hosts_scroll.set,
+        )
+        self.hosts_listbox.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=(0, 8))
+        hosts_scroll.configure(command=self.hosts_listbox.yview)
+        self.hosts_status = tk.Label(
+            cx, text="", bg=PANEL, fg=MUTED, font=("DejaVu Sans", 9), anchor="w"
+        )
+        self.hosts_status.pack(fill="x", pady=(6, 0))
+        self.hosts = hosts_control.load_local()
+        self._refresh_hosts()
+
+    def _refresh_hosts(self) -> None:
+        if not hasattr(self, "hosts_listbox"):
+            return
+        self.hosts_listbox.delete(0, "end")
+        for domain in getattr(self, "hosts", []):
+            self.hosts_listbox.insert("end", domain)
+
+    def _set_hosts_status(self, message: str, color: str = MUTED) -> None:
+        if hasattr(self, "hosts_status"):
+            self.hosts_status.configure(text=message, fg=color)
+
+    def _apply_hosts_state(self, payload: str) -> None:
+        try:
+            items = json.loads(payload)
+        except ValueError:
+            self._set_hosts_status("Lista hosts inválida.", RED)
+            return
+        domains, error = hosts_control.validate_list(items)
+        if error:
+            self._set_hosts_status(error, RED)
+            return
+        self.hosts = domains
+        try:
+            hosts_control.save_local(domains)
+        except OSError:
+            pass
+        self._refresh_hosts()
+        self._set_hosts_status(f"/etc/hosts: {len(domains)} dominios aplicados.", GREEN)
+
     # ------------------------------------------------------- interfaz de red
     def _refresh_interfaces(self, force: bool = False) -> None:
         interfaces = list_interfaces()
@@ -2051,6 +2148,14 @@ class WayViewerPanel:
                 elif kind == "control_error":
                     self._set_control_status(f"Control remoto: {payload}", RED)
                     self._chat_append("error", f"Control remoto: {payload}")
+                elif kind == "hosts_state":
+                    self._apply_hosts_state(payload)
+                elif kind == "hosts_ack":
+                    ok_text, detail = self._split_payload(payload)
+                    if ok_text == "1":
+                        self._set_hosts_status(detail, GREEN)
+                    else:
+                        self._set_hosts_status(detail, RED)
                 elif kind == "file_pick_done":
                     self.picking_file = False
                     self.file_btn.configure(
