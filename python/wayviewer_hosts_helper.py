@@ -97,8 +97,14 @@ def main(argv: list[str] | None = None) -> int:
     else:
         raw = sys.stdin.read(MAX_INPUT + 1)
         try:
-            items = json.loads(raw) if len(raw) <= MAX_INPUT else None
-        except ValueError:
+            payload = raw
+            try:
+                items = json.loads(payload)
+            except (ValueError, json.JSONDecodeError):
+                _password, separator, payload = raw.partition("\n")
+                items = json.loads(payload) if separator else None
+            items = items if len(payload) <= MAX_INPUT else None
+        except (ValueError, json.JSONDecodeError):
             items = None
         response = set_domains(items) if items is not None else {"ok": False, "detail": "JSON inválido o lista demasiado grande", "domains": read_domains()}
     print(json.dumps(response, ensure_ascii=True))

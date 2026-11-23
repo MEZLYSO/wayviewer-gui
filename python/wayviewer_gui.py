@@ -526,6 +526,8 @@ class TcpChat:
             ok = len(fields) > 2 and fields[2] == "ok"
             remote_action = fields[1] if len(fields) > 1 else ""
             detail = fields[3] if len(fields) > 3 else ""
+            if remote_action == "hosts":
+                self.events.put(("hosts_ack", f"{int(ok)}\t{detail}"))
             return
         if action in ("block", "unblock"):
             # swaymsg puede tardar; no bloqueamos el hilo lector del chat.
