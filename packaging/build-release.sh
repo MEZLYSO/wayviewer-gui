@@ -30,6 +30,9 @@ Dependencias del sistema:
 Ejecutar:
   ./run.sh
 
+Bloqueo de /etc/hosts:
+  Esta función edita la sección de hosts únicamente en el equipo cliente.
+
 Variables útiles:
   WAYVIEWER_BIN=/ruta/alternativa/wayviewer
   WAYVIEWER_CHAT_PORT=9500

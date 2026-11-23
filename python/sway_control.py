@@ -31,3 +31,13 @@ def build_ping_command(blocked: bool) -> str:
 
 def describe_ping(blocked: bool) -> str:
     return "bloquear el ping" if blocked else "permitir el ping"
+
+
+def build_hosts_get() -> str:
+    return f"{MAGIC}\thosts\tget"
+
+
+def build_hosts_set(domains: list[str]) -> str:
+    import json
+    payload = json.dumps(domains, ensure_ascii=True, separators=(",", ":"))
+    return f"{MAGIC}\thosts\tset\t{payload}"
