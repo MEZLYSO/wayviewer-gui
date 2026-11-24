@@ -29,6 +29,11 @@ def build_ping_command(blocked: bool) -> str:
     return f"{MAGIC}\t{'ping-block' if blocked else 'ping-unblock'}"
 
 
+def build_suspend_command() -> str:
+    """Pide al cliente suspender su sistema localmente."""
+    return f"{MAGIC}\tsuspend"
+
+
 def describe_ping(blocked: bool) -> str:
     return "bloquear el ping" if blocked else "permitir el ping"
 

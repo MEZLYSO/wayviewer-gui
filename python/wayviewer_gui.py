@@ -1149,19 +1149,22 @@ class WayViewerPanel:
         self.unblock_btn.grid_forget()
         self.ping_block_btn.grid_forget()
         self.ping_unblock_btn.grid_forget()
+        self.suspend_btn.grid_forget()
         self.control_status.grid_forget()
-        row.grid_columnconfigure(4, weight=1)
+        row.grid_columnconfigure(5, weight=1)
         self.block_btn.grid(row=0, column=0, sticky="w")
         self.unblock_btn.grid(row=0, column=1, sticky="w", padx=(8, 0))
         self.ping_block_btn.grid(row=0, column=2, sticky="w", padx=(8, 0))
         self.ping_unblock_btn.grid(row=0, column=3, sticky="w", padx=(8, 0))
         if self.layout_mode == "narrow":
+            self.suspend_btn.grid(row=1, column=0, sticky="w", pady=(6, 0))
             self.control_status.grid(
-                row=1, column=0, columnspan=5, sticky="ew", pady=(6, 0)
+                row=2, column=0, columnspan=5, sticky="ew", pady=(6, 0)
             )
         else:
+            self.suspend_btn.grid(row=0, column=4, sticky="w", padx=(8, 0))
             self.control_status.grid(
-                row=0, column=4, sticky="ew", padx=(12, 0)
+                row=0, column=5, sticky="ew", padx=(12, 0)
             )
 
     def _arrange_header(self) -> None:
@@ -1562,6 +1565,23 @@ class WayViewerPanel:
             font=("DejaVu Sans", 9, "bold"),
         )
         self.ping_unblock_btn.grid(row=0, column=3, sticky="w", padx=(8, 0))
+
+        self.suspend_btn = tk.Button(
+            control_row,
+            text="Suspender cliente",
+            command=self._send_suspend,
+            bg="#3d1a1a",
+            fg=RED,
+            activebackground="#552222",
+            activeforeground="#ffffff",
+            disabledforeground="#6e7681",
+            relief="flat",
+            padx=12,
+            pady=5,
+            cursor="hand2",
+            font=("DejaVu Sans", 9, "bold"),
+        )
+        self.suspend_btn.grid(row=0, column=4, sticky="w", padx=(8, 0))
 
         self.control_status = tk.Label(
             control_row,
@@ -2012,6 +2032,7 @@ class WayViewerPanel:
             self.unblock_btn.configure(state="normal")
             self.ping_block_btn.configure(state="normal")
             self.ping_unblock_btn.configure(state="normal")
+            self.suspend_btn.configure(state="normal")
             self.chat_entry.focus_set()
         else:
             self.client_ip_entry.configure(state="normal")
@@ -2029,6 +2050,7 @@ class WayViewerPanel:
             self.unblock_btn.configure(state="disabled")
             self.ping_block_btn.configure(state="disabled")
             self.ping_unblock_btn.configure(state="disabled")
+            self.suspend_btn.configure(state="disabled")
             self.var_chat_message.set("")
             self._set_file_status(f"Se guardan en {FILE_DIR}")
             self._set_control_status(
@@ -2097,6 +2119,25 @@ class WayViewerPanel:
         description = sway_control.describe_ping(blocked)
         self._set_control_status(f"Control remoto: enviado «{description}»…", AMBER)
         self._chat_append("system", f"Control remoto enviado: {description}")
+
+    def _send_suspend(self) -> None:
+        if not self.chat_connected:
+            self._set_control_status("Conecta el chat primero.", AMBER)
+            return
+        if not messagebox.askyesno(
+            "Suspender cliente",
+            "El equipo cliente entrará en suspensión. ¿Continuar?",
+            parent=self.root,
+        ):
+            return
+        if not self.chat.send_control(sway_control.build_suspend_command()):
+            self.chat_connected = False
+            self.chat_connecting = False
+            self._apply_chat_state(False)
+            self._set_control_status("No se pudo enviar la orden.", RED)
+            return
+        self._set_control_status("Orden de suspensión enviada al cliente…", AMBER)
+        self._chat_append("system", "Orden de suspensión enviada al cliente.")
 
     # ---------------------------------------------------------- archivos
     def _set_file_status(self, message: str, color: str = MUTED) -> None:
@@ -2219,7 +2260,9 @@ class WayViewerPanel:
                 elif kind == "control_ack":
                     action, ok, detail = self._split_control_payload(payload)
                     if ok:
-                        if action == "ping-block":
+                        if action == "suspend":
+                            label = "suspensión solicitada al cliente"
+                        elif action == "ping-block":
                             label = "ping bloqueado"
                         elif action == "ping-unblock":
                             label = "ping permitido"
