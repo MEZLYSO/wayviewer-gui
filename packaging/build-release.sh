@@ -9,7 +9,7 @@ STAGE="$(mktemp -d)"
 trap 'rm -rf "${STAGE}"' EXIT
 PKG="wayviewer-${VERSION}-linux-x86_64-${KIND}"
 DEST="${STAGE}/${PKG}"
-mkdir -p "${DEST}/python" "${DEST}/bin"
+mkdir -p "${DEST}/python" "${DEST}/bin" "${DEST}/packaging"
 install -m 0755 "${BIN}" "${DEST}/bin/wayviewer"
 install -m 0644 "${ROOT}/python/wayviewer_gui.py" "${DEST}/python/"
 install -m 0644 "${ROOT}/python/wayviewer_relay.py" "${DEST}/python/"
@@ -22,6 +22,8 @@ install -m 0644 "${ROOT}/python/hosts_control.py" "${DEST}/python/"
 install -m 0755 "${ROOT}/packaging/install-nft-helper.sh" "${DEST}/"
 install -m 0755 "${ROOT}/packaging/install-power-helper.sh" "${DEST}/"
 install -m 0755 "${ROOT}/packaging/install-hosts-helper.sh" "${DEST}/"
+install -m 0755 "${ROOT}/packaging/install-master.sh" "${DEST}/packaging/"
+install -m 0755 "${ROOT}/packaging/install-linux-common.sh" "${DEST}/packaging/"
 install -m 0755 "${ROOT}/run.sh" "${DEST}/"
 cat > "${DEST}/README.txt" <<README
 WayViewer ${VERSION} (${KIND}) - Cliente
@@ -38,6 +40,9 @@ Dependencias del sistema:
 Ejecutar:
   ./run.sh
 
+Instalar en Mint/Debian o Arch (requiere un binario compatible):
+  sudo ./packaging/install-master.sh \$USER
+
 Bloqueo de ping y hosts del cliente (una vez, como root):
   sudo pacman -S nftables
   sudo ./install-nft-helper.sh \$USER
@@ -46,6 +51,10 @@ Bloqueo de ping y hosts del cliente (una vez, como root):
 El cliente pide la contraseña local al cambiar el bloqueo o suspender.
 Para habilitar suspensión remota, instala el helper una vez:
   sudo ./install-power-helper.sh \$USER
+
+El instalador comprueba libc y bibliotecas. El binario del repositorio puede
+ser específico de Void/musl; para Debian/Arch usa un build nativo con:
+  sudo env WAYVIEWER_BIN=/ruta/al/wayviewer ./packaging/install-master.sh \$USER
 
 Variables útiles:
   WAYVIEWER_BIN=/ruta/alternativa/wayviewer
