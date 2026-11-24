@@ -9,11 +9,14 @@ STAGE="$(mktemp -d)"
 trap 'rm -rf "${STAGE}"' EXIT
 PKG="wayviewer-${VERSION}-linux-x86_64-${KIND}"
 DEST="${STAGE}/${PKG}"
-mkdir -p "${DEST}/python" "${DEST}/bin"
+mkdir -p "${DEST}/python" "${DEST}/bin" "${DEST}/packaging"
 install -m 0755 "${BIN}" "${DEST}/bin/wayviewer"
 install -m 0644 "${ROOT}/python/wayviewer_gui.py" "${DEST}/python/"
 install -m 0644 "${ROOT}/python/wayviewer_relay.py" "${DEST}/python/"
 install -m 0644 "${ROOT}/python/sway_control.py" "${DEST}/python/"
+install -m 0644 "${ROOT}/python/hosts_control.py" "${DEST}/python/"
+install -m 0755 "${ROOT}/packaging/install-admin.sh" "${DEST}/packaging/"
+install -m 0755 "${ROOT}/packaging/install-linux-common.sh" "${DEST}/packaging/"
 install -m 0755 "${ROOT}/run.sh" "${DEST}/"
 cat > "${DEST}/README.txt" <<README
 WayViewer ${VERSION} (${KIND}) - Administración
@@ -30,6 +33,13 @@ Dependencias del sistema:
 
 Ejecutar:
   ./run.sh
+
+Instalar en Mint/Debian o Arch (requiere un binario compatible):
+  sudo ./packaging/install-admin.sh \$USER
+
+El instalador instala dependencias con apt o pacman y comprueba libc y ABI.
+El binario incluido puede ser específico de Void/musl. En ese caso proporciona
+un build nativo: sudo env WAYVIEWER_BIN=/ruta/wayviewer ./packaging/install-admin.sh \$USER
 
 Bloqueo de /etc/hosts:
   Esta función edita la sección de hosts únicamente en el equipo cliente.
