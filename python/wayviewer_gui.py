@@ -34,6 +34,7 @@ from collections import deque
 import sway_control
 import ping_control
 import hosts_control
+import power_control
 
 try:
     import tkinter as tk
@@ -546,6 +547,13 @@ class TcpChat:
                 daemon=True,
             ).start()
             return
+        if action == "suspend":
+            threading.Thread(
+                target=self._suspend_worker,
+                name="power-suspend",
+                daemon=True,
+            ).start()
+            return
         if action == "hosts":
             subaction = fields[1] if len(fields) > 1 else ""
             if subaction == "state":
@@ -611,6 +619,21 @@ class TcpChat:
         if not ok:
             self.clear_password()
         self._send_line(sway_control.build_ack(action, ok, detail) + "\n")
+
+    def _suspend_worker(self) -> None:
+        password = self._request_password()
+        if password is None:
+            self._send_line(
+                sway_control.build_ack("suspend", False, "operación cancelada") + "\n"
+            )
+            return
+        try:
+            ok, detail = power_control.suspend(password)
+        except Exception as exc:  # noqa: BLE001
+            ok, detail = False, str(exc)
+        if not ok:
+            self.clear_password()
+        self._send_line(sway_control.build_ack("suspend", ok, detail) + "\n")
 
     def _hosts_worker(self, subaction: str, payload: str) -> None:
         try:
