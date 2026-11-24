@@ -26,8 +26,8 @@ install -m 0755 "${ROOT}/run.sh" "${DEST}/"
 cat > "${DEST}/README.txt" <<README
 WayViewer ${VERSION} (${KIND}) - Cliente
 
-Esta es la versión cliente: recibe las órdenes de entrada y de bloqueo de
-ping desde el panel de administración y las aplica localmente.
+Esta es la versión cliente: recibe órdenes de bloqueo de entrada y ping, y
+puede suspenderse desde el panel de administración.
 
 Dependencias del sistema:
   - Python 3 + tkinter
