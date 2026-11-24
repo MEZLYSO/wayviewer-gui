@@ -1,8 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-KIND="${1:-$(ldd --version 2>&1 | grep -qi musl && echo musl || echo glibc)}"
 BIN="${WAYVIEWER_BIN:-${ROOT}/wayviewer}"
+if [[ $# -ge 1 ]]; then
+    KIND="$1"
+else
+    INTERPRETER="$(readelf -l "${BIN}" 2>/dev/null | sed -n 's/.*Requesting program interpreter: \([^]]*\)].*/\1/p' | head -n 1 || true)"
+    case "${INTERPRETER}" in
+        *ld-musl*) KIND=musl ;;
+        *ld-linux*) KIND=glibc ;;
+        *) KIND="$(ldd --version 2>&1 | grep -qi musl && echo musl || echo glibc)" ;;
+    esac
+fi
 VERSION="${VERSION:-$(git -C "${ROOT}" describe --tags --always 2>/dev/null || echo dev)}"
 [[ -x "${BIN}" ]] || { echo "No se encontró binario ejecutable en ${BIN}"; exit 1; }
 STAGE="$(mktemp -d)"
