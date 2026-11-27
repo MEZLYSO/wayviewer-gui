@@ -1776,8 +1776,8 @@ class WayViewerPanel:
         hosts_hint = tk.Label(
             hosts_head,
             text=(
-                "Se enviará al cliente: IPv4, IPv6 y variante www. "
-                "Intro para añadir, doble clic para quitar."
+                "Una entrada por dominio. Al aplicar se envían IPv4, IPv6 y "
+                "variante www. Intro para añadir, doble clic para quitar."
             ),
             bg=PANEL, fg=MUTED, font=("DejaVu Sans", 9), anchor="w", justify="left",
         )
@@ -1970,18 +1970,19 @@ class WayViewerPanel:
         domain = hosts_control.normalize(self.var_host_domain.get())
         if domain is None:
             self._set_host_status("Dominio inválido.", RED); return
-        variants, invalid = hosts_control.expand_domains([domain])
-        if invalid:
-            self._set_host_status("Dominio inválido.", RED); return
-        new = [variant for variant in variants if variant not in self.hosts]
-        if not new:
+        key = hosts_control.domain_key(domain)
+        if any(hosts_control.domain_key(item) == key for item in self.hosts):
             self._set_host_status("Ya está en la lista.", AMBER); return
-        if len(self.hosts) + len(new) > hosts_control.MAX_DOMAINS:
+        expanded, error = hosts_control.validate_list(self.hosts + [domain])
+        if error:
+            self._set_host_status(error, RED); return
+        if len(expanded) > hosts_control.MAX_DOMAINS:
             self._set_host_status("Máximo alcanzado.", RED); return
-        self.hosts.extend(new); self.hosts_dirty = True
+        # La variante www se genera al aplicar; en la vista queda una entrada.
+        self.hosts.append(domain); self.hosts_dirty = True
         hosts_control.save_local(self.hosts)
         self.var_host_domain.set(""); self._refresh_hosts()
-        self._set_host_status(f"{', '.join(new)} añadidos. Pulsa Aplicar.", AMBER)
+        self._set_host_status(f"{domain} añadido. Pulsa Aplicar.", AMBER)
 
     def _remove_host(self) -> None:
         selection = self.hosts_listbox.curselection()
@@ -2009,7 +2010,8 @@ class WayViewerPanel:
         domains, error = hosts_control.validate_list(self.hosts)
         if error:
             self._set_host_status(error, RED); return
-        self.hosts = domains
+        # domains incluye las variantes www para /etc/hosts; la vista queda simple.
+        self.hosts = hosts_control.collapse_domains(domains)
         self._refresh_hosts()
         if not self._start_hosts_request(
             "Aplicar lista", f"Enviando {len(domains)} dominios…"
@@ -2029,14 +2031,14 @@ class WayViewerPanel:
         if error:
             self._set_host_status(error, RED)
             return
-        self.hosts = domains
+        self.hosts = hosts_control.collapse_domains(domains)
         self.hosts_dirty = False
         try:
-            hosts_control.save_local(domains)
+            hosts_control.save_local(self.hosts)
         except OSError:
             pass
         self._refresh_hosts()
-        self._set_host_status(f"Lista aplicada: {len(domains)} dominios.", GREEN)
+        self._set_host_status(f"Lista aplicada: {len(self.hosts)} dominios.", GREEN)
 
     # ------------------------------------------------------- interfaz de red
     def _refresh_interfaces(self, force: bool = False) -> None:

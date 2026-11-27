@@ -43,6 +43,29 @@ def expand_domains(items:object)->tuple[list[str],list[str]]:
             if candidate not in valid:valid.append(candidate)
     return valid,invalid
 
+def domain_key(domain:str)->str:
+    """Clave común para un dominio y su variante www."""
+    return domain[4:] if domain.startswith("www.") else domain
+
+def collapse_domains(items:object)->list[str]:
+    """Unifica ``www.dominio`` y ``dominio`` en una sola entrada visible.
+
+    La expansión a variantes www sigue aplicándose al enviar la lista al
+    cliente y al escribir /etc/hosts; aquí solo se evita duplicar la vista.
+    """
+    valid,_invalid=expand_domains(items) if isinstance(items,list) else ([],[])
+    result:list[str]=[]
+    keys:dict[str,int]={}
+    for domain in valid:
+        key=domain_key(domain)
+        if key in keys:
+            if domain.startswith("www."):continue
+            result[keys[key]]=domain
+        else:
+            keys[key]=len(result)
+            result.append(domain)
+    return result
+
 def validate_list(items:object)->tuple[list[str]|None,str]:
     if not isinstance(items,list):return None,"la lista no es válida"
     valid,invalid=expand_domains(items)
@@ -56,7 +79,7 @@ def load_local()->list[str]:
         with open(_STORE,encoding="utf-8") as f:data=json.load(f)
     except (OSError,ValueError):return []
     valid,error=validate_list(data)
-    return valid if not error else []
+    return collapse_domains(valid) if not error else []
 
 def save_local(domains:list[str])->None:
     os.makedirs(_CONFIG,exist_ok=True)
