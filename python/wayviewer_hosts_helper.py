@@ -33,10 +33,11 @@ def read_domains() -> list[str]:
     found = []
     for line in lines[start:end]:
         parts = line.split()
-        if len(parts) == 2 and parts[0] in ("127.0.0.1", "::1"):
-            domain = hosts_control.normalize(parts[1])
-            if domain and domain not in found:
-                found.append(domain)
+        if len(parts) >= 2 and parts[0] in ("127.0.0.1", "::1"):
+            for item in parts[1:]:
+                domain = hosts_control.normalize(item)
+                if domain and domain not in found:
+                    found.append(domain)
     valid, error = hosts_control.validate_list(found)
     return valid if not error else []
 
@@ -62,11 +63,14 @@ def set_domains(items: object) -> dict:
     if domains:
         if kept:
             kept.append("")
-        kept.extend([BEGIN])
-        for domain in domains:
-            kept.append(f"127.0.0.1 {domain}")
-            kept.append(f"::1 {domain}")
-        kept.append(END)
+        kept.extend(
+            [
+                BEGIN,
+                f"127.0.0.1 {' '.join(domains)}",
+                f"::1 {' '.join(domains)}",
+                END,
+            ]
+        )
     directory = os.path.dirname(HOSTS) or "."
     os.makedirs(directory, exist_ok=True)
     temporary = HOSTS + ".wayviewer.tmp"

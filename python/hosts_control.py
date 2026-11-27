@@ -65,7 +65,9 @@ def validate_list(items: object) -> tuple[list[str] | None, str]:
             valid.append(domain)
     if invalid:
         return None, "dominio inválido: " + ", ".join(invalid[:3])
-    return sorted(valid), ""
+    # Conserva el orden de entrada para que /etc/hosts refleje la lista tal
+    # como la administra el usuario.
+    return valid, ""
 
 
 def load_local() -> list[str]:
