@@ -555,13 +555,6 @@ class TcpChat:
                 daemon=True,
             ).start()
             return
-        if action == "suspend":
-            threading.Thread(
-                target=self._suspend_worker,
-                name="power-suspend",
-                daemon=True,
-            ).start()
-            return
         if action == "hosts":
             subaction = fields[1] if len(fields) > 1 else ""
             if subaction == "state":
@@ -678,7 +671,12 @@ class TcpChat:
                     return
                 ok, applied, detail = hosts_control.apply(items, password)
             else:
-                ok, applied, detail = hosts_control.get_state()
+                # El helper usa sudo con PASSWD también para "get".
+                password = self._request_password()
+                if password is None:
+                    self._send_line(sway_control.build_ack("hosts", False, "operación cancelada") + "\n")
+                    return
+                ok, applied, detail = hosts_control.get_state(password)
             if not ok:
                 self.clear_password()
             self._send_line(sway_control.build_hosts_state(applied) + "\n")
