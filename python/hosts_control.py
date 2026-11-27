@@ -28,15 +28,26 @@ def normalize(value: object)->str|None:
     if len(labels)<2 or not all(_LABEL.match(x) for x in labels):return None
     return host
 
-def validate_list(items:object)->tuple[list[str]|None,str]:
-    if not isinstance(items,list):return None,"la lista no es válida"
-    if len(items)>MAX_DOMAINS:return None,f"máximo {MAX_DOMAINS} dominios"
+def expand_domains(items:object)->tuple[list[str],list[str]]:
+    """Añade la variante www cuando el dominio no la lleva ya."""
+    if not isinstance(items,list):return [],[]
     valid=[];invalid=[]
     for item in items:
         domain=normalize(item)
-        if domain is None:invalid.append(str(item)[:80])
-        elif domain not in valid:valid.append(domain)
+        if domain is None:invalid.append(str(item)[:80]);continue
+        candidates=[domain]
+        if not domain.startswith("www."):
+            www=normalize("www."+domain)
+            if www:candidates.append(www)
+        for candidate in candidates:
+            if candidate not in valid:valid.append(candidate)
+    return valid,invalid
+
+def validate_list(items:object)->tuple[list[str]|None,str]:
+    if not isinstance(items,list):return None,"la lista no es válida"
+    valid,invalid=expand_domains(items)
     if invalid:return None,"dominio inválido: "+", ".join(invalid[:3])
+    if len(valid)>MAX_DOMAINS:return None,f"máximo {MAX_DOMAINS} dominios (incluidas variantes www)"
     # Mantener el orden de entrada para emitir /etc/hosts igual que la UI.
     return valid,""
 

@@ -1646,14 +1646,18 @@ class WayViewerPanel:
         domain = hosts_control.normalize(self.var_host_domain.get())
         if domain is None:
             self._set_host_status("Dominio inválido.", RED); return
-        if domain in self.hosts:
+        variants, invalid = hosts_control.expand_domains([domain])
+        if invalid:
+            self._set_host_status("Dominio inválido.", RED); return
+        new = [variant for variant in variants if variant not in self.hosts]
+        if not new:
             self._set_host_status("Ya está en la lista.", AMBER); return
-        if len(self.hosts) >= hosts_control.MAX_DOMAINS:
+        if len(self.hosts) + len(new) > hosts_control.MAX_DOMAINS:
             self._set_host_status("Máximo alcanzado.", RED); return
-        self.hosts.append(domain); self.hosts_dirty = True
+        self.hosts.extend(new); self.hosts_dirty = True
         hosts_control.save_local(self.hosts)
         self.var_host_domain.set(""); self._refresh_hosts()
-        self._set_host_status(f"{domain} añadido. Pulsa Aplicar.", AMBER)
+        self._set_host_status(f"{', '.join(new)} añadidos. Pulsa Aplicar.", AMBER)
 
     def _remove_host(self) -> None:
         selection = self.hosts_listbox.curselection()
