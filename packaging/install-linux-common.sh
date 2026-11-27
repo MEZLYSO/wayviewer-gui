@@ -51,7 +51,8 @@ install_dependencies() {
         echo "Detectado apt (Debian, Ubuntu, Mint y derivados)."
         apt-get update
         local packages=(python3 python3-tk ffmpeg binutils libwayland-client0 libgbm1 libdrm2 libstdc++6)
-        # El binario requiere libsrt.so.1.5; libsrt1.4 tiene otro SONAME.
+        # La ABI requerida por el binario actual es libsrt.so.1.5. No instalar
+        # libsrt1.4: tiene otro SONAME y no resuelve este error.
         local srt_package=""
         local candidate metadata
         for candidate in libsrt1.5-gnutls libsrt1.5-openssl; do
@@ -81,8 +82,18 @@ install_dependencies() {
         fi
         pacman -S --needed --noconfirm "${packages[@]}"
         PACKAGE_FAMILY=arch
+    elif command -v xbps-install >/dev/null 2>&1; then
+        echo "Detectado xbps (Void Linux)."
+        # El binario incluido usa /lib/ld-musl-x86_64.so.1, que encaja con
+        # Void musl. En Void glibc hace falta un build nativo (WAYVIEWER_BIN).
+        local packages=(python3 python3-tkinter ffmpeg binutils libsrt wayland mesa libdrm gtk+3)
+        if [[ "$ROLE" == client ]]; then
+            packages+=(sudo nftables)
+        fi
+        xbps-install -S -y "${packages[@]}"
+        PACKAGE_FAMILY=void
     else
-        echo "Distribución no soportada automáticamente: se requiere apt o pacman." >&2
+        echo "Distribución no soportada automáticamente: se requiere apt, pacman o xbps-install." >&2
         echo "Instala Python 3, Tkinter, FFmpeg, binutils y las bibliotecas Wayland/DRM/GBM manualmente." >&2
         exit 1
     fi

@@ -63,20 +63,25 @@ Dependencias del sistema:
 Ejecutar:
   ./run.sh
 
-Instalar en Mint/Debian o Arch (requiere un binario compatible):
+Instalar en Mint/Debian, Arch o Void Linux (requiere un binario compatible):
   sudo ./packaging/install-master.sh \$USER
 
 Bloqueo de ping y hosts del cliente (una vez, como root):
-  sudo pacman -S nftables
-  sudo ./install-nft-helper.sh \$USER
-  sudo ./install-hosts-helper.sh \$USER
+  Instala nftables con el gestor de tu distro, por ejemplo:
+    Debian/Mint: sudo apt install nftables
+    Arch:        sudo pacman -S nftables
+    Void:        sudo xbps-install -S nftables
+  Después ejecuta:
+    sudo ./install-nft-helper.sh \$USER
+    sudo ./install-hosts-helper.sh \$USER
 
 El cliente pide la contraseña local al cambiar el bloqueo o suspender.
 Para habilitar suspensión remota, instala el helper una vez:
   sudo ./install-power-helper.sh \$USER
 
-El instalador comprueba libc y bibliotecas. El binario del repositorio puede
-ser específico de Void/musl; para Debian/Arch usa un build nativo con:
+El instalador instala dependencias con apt, pacman o xbps-install y comprueba
+libc y ABI. El binario incluido es musl, por lo que encaja con Void Linux (musl).
+En Void glibc u otra ABI, proporciona un build nativo:
   sudo env WAYVIEWER_BIN=/ruta/al/wayviewer ./packaging/install-master.sh \$USER
 
 Descubrimiento LAN/VPN:
