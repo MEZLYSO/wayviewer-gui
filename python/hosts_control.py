@@ -51,22 +51,36 @@ def normalize(value: object) -> str | None:
     return host
 
 
-def validate_list(items: object) -> tuple[list[str] | None, str]:
+def expand_domains(items: object) -> tuple[list[str], list[str]]:
+    """Añade la variante www cuando el dominio no la lleva ya."""
     if not isinstance(items, list):
-        return None, "la lista de hosts no es válida"
-    if len(items) > MAX_DOMAINS:
-        return None, f"máximo {MAX_DOMAINS} dominios"
+        return [], []
     valid, invalid = [], []
     for item in items:
         domain = normalize(item)
         if domain is None:
             invalid.append(str(item)[:80])
-        elif domain not in valid:
-            valid.append(domain)
+            continue
+        candidates = [domain]
+        if not domain.startswith("www."):
+            www = normalize("www." + domain)
+            if www:
+                candidates = [www, domain]
+        for candidate in candidates:
+            if candidate not in valid:
+                valid.append(candidate)
+    return valid, invalid
+
+
+def validate_list(items: object) -> tuple[list[str] | None, str]:
+    if not isinstance(items, list):
+        return None, "la lista de hosts no es válida"
+    valid, invalid = expand_domains(items)
     if invalid:
         return None, "dominio inválido: " + ", ".join(invalid[:3])
-    # Conserva el orden de entrada para que /etc/hosts refleje la lista tal
-    # como la administra el usuario.
+    if len(valid) > MAX_DOMAINS:
+        return None, f"máximo {MAX_DOMAINS} dominios (incluidas variantes www)"
+    # La variante www va primero; el resto conserva el orden de entrada.
     return valid, ""
 
 
