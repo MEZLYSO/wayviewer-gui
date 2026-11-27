@@ -2378,6 +2378,9 @@ class WayViewerPanel:
             "values": values,
             "phase": "connecting",
         }
+        # El chat es 1 a 1: tras dar la orden queremos chatear y enviar
+        # archivos al cliente que mirará, no al transmisor anterior.
+        self.var_client_ip.set(viewer_ip)
         self.view_start_btn.configure(state="disabled")
         self.view_stop_btn.configure(state="disabled")
         self._set_view_status(
