@@ -15,9 +15,6 @@ def main(argv: list[str] | None = None) -> int:
         print("uso: wayviewer-power suspend", file=sys.stderr)
         return 2
     try:
-        # La respuesta se envía antes de suspender para que el ACK llegue al
-        # administrador. systemctl suspende el equipo después del flush.
-        print(json.dumps({"ok": True, "detail": "suspensión solicitada"}), flush=True)
         result = subprocess.run(
             [SYSTEMCTL, "suspend"],
             stdin=subprocess.DEVNULL,
@@ -27,12 +24,13 @@ def main(argv: list[str] | None = None) -> int:
             check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        print(str(exc), file=sys.stderr)
+        print(json.dumps({"ok": False, "detail": str(exc)}), flush=True)
         return 1
     if result.returncode != 0:
         detail = (result.stderr or "systemctl suspend falló").strip()
-        print(detail, file=sys.stderr)
+        print(json.dumps({"ok": False, "detail": detail}), flush=True)
         return result.returncode
+    print(json.dumps({"ok": True, "detail": "suspensión completada"}), flush=True)
     return 0
 
 

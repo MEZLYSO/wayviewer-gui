@@ -611,6 +611,10 @@ class TcpChat:
         with self._password_lock:
             self._root_password = None
 
+    def cache_password(self, password: str) -> None:
+        with self._password_lock:
+            self._root_password = password
+
     def _ping_worker(self, action: str) -> None:
         password = self._request_password()
         if password is None:
@@ -1008,7 +1012,34 @@ class WayViewerPanel:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.bind("<F5>", lambda _event: self._refresh_interfaces(force=True))
         self.root.after(100, self._poll)
+        self.root.after(350, self._prompt_startup_password)
         self.root.after(8000, self._auto_refresh_interfaces)
+
+    def _prompt_startup_password(self) -> None:
+        """Pide una vez la contraseña local de sudo al iniciar el cliente."""
+        if self.closing:
+            return
+        password = simpledialog.askstring(
+            "Autorización del cliente",
+            "Introduce la contraseña de sudo de esta cuenta. Se conservará solo en memoria durante esta sesión.",
+            parent=self.root,
+            show="*",
+        )
+        if password is None:
+            return
+        ok, detail = power_control.validate_password(password)
+        if ok:
+            self.chat.cache_password(password)
+            self._set_control_status(
+                "Contraseña autorizada para esta sesión del cliente.", GREEN
+            )
+            return
+        self._set_control_status("No se pudo validar la contraseña de sudo.", RED)
+        messagebox.showerror(
+            "Autorización fallida",
+            f"sudo no aceptó la contraseña o no permite autenticación: {detail}",
+            parent=self.root,
+        )
 
     # ------------------------------------------------------------------ UI
     def _configure_window(self) -> None:

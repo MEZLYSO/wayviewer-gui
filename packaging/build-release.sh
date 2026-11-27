@@ -38,7 +38,8 @@ cat > "${DEST}/README.txt" <<README
 WayViewer ${VERSION} (${KIND}) - Cliente
 
 Esta es la versión cliente: recibe órdenes de bloqueo de entrada y ping, y
-puede suspenderse desde el panel de administración.
+puede suspenderse desde el panel de administración. Al iniciar, pide la
+contraseña local de sudo y la conserva únicamente en memoria hasta cerrar.
 
 Dependencias del sistema:
   - Python 3 + tkinter
