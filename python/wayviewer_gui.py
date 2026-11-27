@@ -538,6 +538,8 @@ class TcpChat:
                 self.events.put(("hosts_state", fields[2] if len(fields) > 2 else "[]"))
             elif subaction in ("get", "set"):
                 self.events.put(("control_error", "Este equipo administra; no modifica /etc/hosts."))
+            else:
+                self.events.put(("control_error", f"Acción hosts desconocida: {subaction}"))
             return
         if action in ("block", "unblock"):
             self.events.put(
@@ -549,13 +551,6 @@ class TcpChat:
             return
         if action == "ping-block" or action == "ping-unblock":
             self.events.put(("control_error", "Este equipo administra; no ejecuta nftables."))
-            return
-        if action == "hosts":
-            subaction = fields[1] if len(fields) > 1 else ""
-            if subaction == "state":
-                self.events.put(("hosts_state", fields[2] if len(fields) > 2 else "[]"))
-            else:
-                self.events.put(("control_error", f"Acción hosts desconocida: {subaction}"))
             return
         self.events.put(
             ("control_error", f"Acción de control desconocida: {action}")

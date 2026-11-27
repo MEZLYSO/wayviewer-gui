@@ -25,6 +25,14 @@ def build_command(action: str) -> str:
     return f"{MAGIC}\t{action}"
 
 
+def describe(action: str) -> str:
+    """Texto legible para las órdenes de entrada enviadas al cliente."""
+    return {
+        "block": "bloquear la entrada",
+        "unblock": "desbloquear la entrada",
+    }.get(action, action)
+
+
 def build_ping_command(blocked: bool) -> str:
     return f"{MAGIC}\t{'ping-block' if blocked else 'ping-unblock'}"
 
@@ -46,3 +54,19 @@ def build_hosts_set(domains: list[str]) -> str:
     import json
     payload = json.dumps(domains, ensure_ascii=True, separators=(",", ":"))
     return f"{MAGIC}\thosts\tset\t{payload}"
+
+
+def parse(line: str) -> tuple[dict | None, str]:
+    """Interpreta una línea de control recibida del cliente.
+
+    Sin esta función el hilo lector del chat no puede procesar el estado ni el
+    ACK de /etc/hosts y termina cerrando la conexión.
+    """
+    if not line.startswith(MAGIC):
+        return None, "no es una línea de control"
+    rest = line[len(MAGIC):]
+    if rest.startswith("\t"):
+        rest = rest[1:]
+    if not rest:
+        return None, "formato inválido"
+    return {"fields": rest.split("\t")}, ""
