@@ -230,6 +230,96 @@ def unique_path(directory: str, name: str) -> str:
     return candidate
 
 
+def validate_ip_text(value: object, label: str) -> tuple[str, str]:
+    """Valida una IP literal; evita inyectar URLs o comandos en ffplay."""
+    text = str(value or "").strip()
+    if not text:
+        return "", f"{label} no puede estar vacía."
+    if any(char.isspace() for char in text):
+        return "", f"{label} no puede contener espacios."
+    try:
+        ipaddress.ip_address(text)
+    except ValueError:
+        return "", f"{label} no es una IP válida."
+    return text, ""
+
+
+def validate_stream_values(
+    raw: dict, ip_label: str = "La IP de destino"
+) -> tuple[dict | None, str]:
+    """Valida los parámetros compartidos por la vista local y la remota."""
+    ip_text, error = validate_ip_text(raw.get("ip", ""), ip_label)
+    if error:
+        return None, error
+
+    try:
+        port = int(str(raw.get("port", "")).strip())
+    except ValueError:
+        return None, "El puerto SRT debe ser un número entero."
+    if not 1 <= port <= 65535:
+        return None, "El puerto SRT debe estar entre 1 y 65535."
+
+    try:
+        latency = int(str(raw.get("latency", "")).strip())
+    except ValueError:
+        return None, "La latencia del cliente debe ser un número entero."
+    if latency < 1:
+        return None, "La latencia del cliente debe ser mayor que cero."
+
+    probesize_text = str(raw.get("probesize", "") or "").strip()
+    analyzeduration_text = str(raw.get("analyzeduration", "") or "").strip()
+    for label, text in (
+        ("probesize", probesize_text),
+        ("analyzeduration", analyzeduration_text),
+    ):
+        if not text:
+            continue
+        try:
+            value = int(text)
+        except ValueError:
+            return None, f"{label} debe ser un número entero."
+        if value < 0:
+            return None, f"{label} no puede ser negativo."
+
+    return {
+        "ip": ip_text,
+        "port": port,
+        "latency": latency,
+        "probesize": probesize_text or None,
+        "analyzeduration": analyzeduration_text or None,
+        "nobuffer": bool(raw.get("nobuffer", False)),
+        "low_delay": bool(raw.get("low_delay", False)),
+        "framedrop": bool(raw.get("framedrop", False)),
+        "tlpktdrop": bool(raw.get("tlpktdrop", False)),
+    }, ""
+
+
+def build_srt_url(values: dict) -> str:
+    host = values["ip"]
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    url = f"srt://{host}:{values['port']}?mode=caller&latency={values['latency']}"
+    if values["tlpktdrop"]:
+        url += "&tlpktdrop=1"
+    return url
+
+
+def build_ffplay_args(values: dict) -> list[str]:
+    args = ["ffplay"]
+    if values["probesize"] is not None:
+        args += ["-probesize", str(values["probesize"])]
+    if values["analyzeduration"] is not None:
+        args += ["-analyzeduration", str(values["analyzeduration"])]
+    if values["nobuffer"]:
+        args += ["-fflags", "nobuffer"]
+    if values["low_delay"]:
+        args += ["-flags", "low_delay"]
+    if values["framedrop"]:
+        args.append("-framedrop")
+    args.append(build_srt_url(values))
+    return args
+
+
 GTK_PICKER_SCRIPT = r"""
 import os
 import sys
@@ -554,6 +644,13 @@ class TcpChat:
                 name="power-suspend",
                 daemon=True,
             ).start()
+            return
+        if action == "view":
+            # El proceso ffplay vive en el panel, no en TcpChat.
+            subaction = fields[1] if len(fields) > 1 else ""
+            self.events.put(
+                ("view_request", f"{subaction}\t{fields[2] if len(fields) > 2 else ''}")
+            )
             return
         if action == "hosts":
             subaction = fields[1] if len(fields) > 1 else ""
@@ -959,6 +1056,9 @@ class WayViewerPanel:
         self.proc_relay: subprocess.Popen | None = None
         self.ffplay_proc: subprocess.Popen | None = None
         self.ffplay_stopping = False
+        self.viewer_proc: subprocess.Popen | None = None
+        self.viewer_stopping = False
+        self.view_lock = threading.Lock()
         self.socket_owned = False
         self.stop_requested = threading.Event()
         self.term_lock = threading.Lock()
@@ -967,6 +1067,7 @@ class WayViewerPanel:
             "wayviewer": deque(maxlen=8),
             "relay": deque(maxlen=8),
             "ffplay": deque(maxlen=12),
+            "viewer": deque(maxlen=12),
         }
         self.event_queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self.chat_events: queue.Queue[tuple[str, str]] = queue.Queue()
@@ -1755,55 +1856,21 @@ class WayViewerPanel:
 
     # ------------------------------------------------------- comando cliente
     def _validated_client_values(self) -> dict | None:
-        ip_text = self.var_client_ip.get().strip()
-        if not ip_text:
-            self._client_error("La IP de destino no puede estar vacía.")
+        values, error = validate_stream_values(
+            self._stream_values_from_vars(self.var_client_ip.get())
+        )
+        if error:
+            self._client_error(error)
             return None
-        if any(char.isspace() for char in ip_text):
-            self._client_error("La IP de destino no puede contener espacios.")
-            return None
+        return values
 
-        try:
-            port = int(self.var_srt_port.get())
-        except ValueError:
-            self._client_error("El puerto SRT debe ser un número entero.")
-            return None
-        if not 1 <= port <= 65535:
-            self._client_error("El puerto SRT debe estar entre 1 y 65535.")
-            return None
-
-        try:
-            latency = int(self.var_client_latency.get())
-        except ValueError:
-            self._client_error("La latencia del cliente debe ser un número entero.")
-            return None
-        if latency < 1:
-            self._client_error("La latencia del cliente debe ser mayor que cero.")
-            return None
-
-        probesize_text = self.var_probesize.get().strip()
-        analyzeduration_text = self.var_analyzeduration.get().strip()
-        for label, text in (
-            ("probesize", probesize_text),
-            ("analyzeduration", analyzeduration_text),
-        ):
-            if not text:
-                continue
-            try:
-                value = int(text)
-            except ValueError:
-                self._client_error(f"{label} debe ser un número entero.")
-                return None
-            if value < 0:
-                self._client_error(f"{label} no puede ser negativo.")
-                return None
-
+    def _stream_values_from_vars(self, ip_text: str = "") -> dict:
         return {
             "ip": ip_text,
-            "port": port,
-            "latency": latency,
-            "probesize": probesize_text or None,
-            "analyzeduration": analyzeduration_text or None,
+            "port": self.var_srt_port.get(),
+            "latency": self.var_client_latency.get(),
+            "probesize": self.var_probesize.get(),
+            "analyzeduration": self.var_analyzeduration.get(),
             "nobuffer": self.var_nobuffer.get(),
             "low_delay": self.var_low_delay.get(),
             "framedrop": self.var_framedrop.get(),
@@ -1816,26 +1883,7 @@ class WayViewerPanel:
         )
 
     def _build_client_command(self, values: dict) -> list[str]:
-        url = (
-            f"srt://{values['ip']}:{values['port']}"
-            f"?mode=caller&latency={values['latency']}"
-        )
-        if values["tlpktdrop"]:
-            url += "&tlpktdrop=1"
-
-        args = ["ffplay"]
-        if values["probesize"] is not None:
-            args += ["-probesize", str(values["probesize"])]
-        if values["analyzeduration"] is not None:
-            args += ["-analyzeduration", str(values["analyzeduration"])]
-        if values["nobuffer"]:
-            args += ["-fflags", "nobuffer"]
-        if values["low_delay"]:
-            args += ["-flags", "low_delay"]
-        if values["framedrop"]:
-            args.append("-framedrop")
-        args.append(url)
-        return args
+        return build_ffplay_args(values)
 
     def _toggle_connection(self) -> None:
         if self.ffplay_proc is not None:
@@ -1943,6 +1991,109 @@ class WayViewerPanel:
                 proc.wait(timeout=0.5)
             except subprocess.TimeoutExpired:
                 pass
+
+    # ------------------------------- vista remota pedida por el administrador
+    def _view_worker(self, subaction: str, payload: str) -> None:
+        if subaction == "start":
+            self._view_start(payload)
+        elif subaction == "stop":
+            had_proc = self._stop_viewer()
+            detail = (
+                "reproducción remota detenida" if had_proc
+                else "no había reproducción remota"
+            )
+            self.chat.send_control(
+                sway_control.build_ack("view", True, detail) + "\n"
+            )
+            self.chat_events.put(("view_status", detail))
+        else:
+            self.chat.send_control(
+                sway_control.build_ack(
+                    "view", False, f"acción desconocida: {subaction}"
+                ) + "\n"
+            )
+
+    def _view_start(self, payload: str) -> None:
+        try:
+            raw = json.loads(payload) if payload else None
+        except ValueError:
+            raw = None
+        if not isinstance(raw, dict):
+            self.chat.send_control(
+                sway_control.build_ack(
+                    "view", False, "parámetros de vista inválidos"
+                ) + "\n"
+            )
+            return
+        values, error = validate_stream_values(
+            raw, ip_label="La IP del cliente que transmite"
+        )
+        if error:
+            self.chat.send_control(
+                sway_control.build_ack("view", False, error) + "\n"
+            )
+            return
+
+        ffplay = shutil.which("ffplay")
+        if not ffplay:
+            self.chat.send_control(
+                sway_control.build_ack(
+                    "view", False, "ffplay no está disponible en este equipo"
+                ) + "\n"
+            )
+            return
+
+        # Si ya había una vista remota, se sustituye por la nueva orden.
+        self._stop_viewer()
+        args = build_ffplay_args(values)
+        args[0] = ffplay
+        with self.output_lock:
+            self.last_output["viewer"].clear()
+        try:
+            proc = subprocess.Popen(
+                args,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                start_new_session=True,
+                cwd=ROOT,
+            )
+        except OSError as exc:
+            self.chat.send_control(
+                sway_control.build_ack(
+                    "view", False, f"No se pudo iniciar ffplay: {exc}"
+                ) + "\n"
+            )
+            return
+
+        with self.view_lock:
+            self.viewer_proc = proc
+            self.viewer_stopping = False
+        self._reader_thread("viewer", proc.stdout)
+        detail = f"viendo {build_srt_url(values)} en este equipo"
+        self.chat.send_control(
+            sway_control.build_ack("view", True, detail) + "\n"
+        )
+        self.chat_events.put(("view_status", detail))
+
+    def _stop_viewer(self, grace: float = 1.0) -> bool:
+        with self.view_lock:
+            proc = self.viewer_proc
+            self.viewer_proc = None
+            self.viewer_stopping = False
+        if proc is None:
+            return False
+        self._signal_process(proc, signal.SIGTERM)
+        try:
+            proc.wait(timeout=max(0.1, grace))
+        except subprocess.TimeoutExpired:
+            self._signal_process(proc, signal.SIGKILL)
+            try:
+                proc.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                pass
+        return True
 
     # ----------------------------------------------------------------- chat
     def _toggle_chat(self) -> None:
@@ -2214,6 +2365,16 @@ class WayViewerPanel:
                 elif kind == "control_error":
                     self._set_control_status(f"Control remoto: {payload}", RED)
                     self._chat_append("error", f"Control remoto: {payload}")
+                elif kind == "view_request":
+                    subaction, data = self._split_payload(payload)
+                    threading.Thread(
+                        target=self._view_worker,
+                        args=(subaction, data),
+                        name="view-control",
+                        daemon=True,
+                    ).start()
+                elif kind == "view_status":
+                    self._chat_append("system", f"Vista remota: {payload}")
                 elif kind == "hosts_state":
                     self._apply_hosts_state(payload)
                 elif kind == "hosts_ack":
@@ -2754,6 +2915,20 @@ class WayViewerPanel:
                         "Error de conexión", message, parent=self.root
                     )
 
+        if self.viewer_proc is not None:
+            returncode = self.viewer_proc.poll()
+            if returncode is not None:
+                was_stopping = self.viewer_stopping
+                with self.view_lock:
+                    self.viewer_proc = None
+                    self.viewer_stopping = False
+                if not was_stopping:
+                    detail = self._last_output("viewer")
+                    message = f"La vista remota terminó con código {returncode}."
+                    if detail:
+                        message += "\n\n" + detail
+                    self._chat_append("error", message)
+
         self._drain_chat_events()
         self.root.after(100, self._poll)
 
@@ -2781,6 +2956,7 @@ class WayViewerPanel:
         self.closing = True
         self.stop_requested.set()
         self._terminate_ffplay(grace=min(0.6, grace))
+        self._stop_viewer(grace=min(0.6, grace))
         self.chat.stop()
         self.discovery_stop.set()
         self._terminate_picker()
