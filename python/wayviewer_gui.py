@@ -1663,7 +1663,8 @@ class WayViewerPanel:
         if not hasattr(self, "hosts_listbox"):
             return
         self.hosts_listbox.delete(0, "end")
-        for domain in getattr(self, "hosts", []):
+        # /etc/hosts guarda las dos variantes, pero en la vista se muestra una.
+        for domain in hosts_control.collapse_domains(getattr(self, "hosts", [])):
             self.hosts_listbox.insert("end", domain)
 
     def _set_hosts_status(self, message: str, color: str = MUTED) -> None:
@@ -1686,7 +1687,8 @@ class WayViewerPanel:
         except OSError:
             pass
         self._refresh_hosts()
-        self._set_hosts_status(f"/etc/hosts: {len(domains)} dominios aplicados.", GREEN)
+        visible = hosts_control.collapse_domains(domains)
+        self._set_hosts_status(f"/etc/hosts: {len(visible)} dominios aplicados.", GREEN)
 
     # ------------------------------------------------------- interfaz de red
     def _refresh_interfaces(self, force: bool = False) -> None:
