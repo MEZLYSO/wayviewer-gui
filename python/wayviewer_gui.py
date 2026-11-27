@@ -1344,7 +1344,7 @@ class WayViewerPanel:
         clients_hint = tk.Label(
             clients_head,
             text=(
-                f"Anuncios UDP {discovery.PORT}. Marca □ para seleccionar "
+                f"UDP {discovery.PORT} · LAN/VPN. Marca □ para seleccionar "
                 "clientes; la casilla se actualiza sola."
             ),
             bg=PANEL, fg=MUTED, font=("DejaVu Sans", 9), anchor="w", justify="left",

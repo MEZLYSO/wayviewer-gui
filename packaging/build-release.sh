@@ -54,8 +54,9 @@ un build nativo: sudo env WAYVIEWER_BIN=/ruta/wayviewer ./packaging/install-admi
 Bloqueo de /etc/hosts:
   Esta función edita la sección de hosts únicamente en el equipo cliente.
 
-Descubrimiento LAN:
-  El panel muestra clientes que anuncian UDP en el puerto 9501.
+Descubrimiento LAN/VPN:
+  El panel muestra clientes que anuncian UDP en el puerto 9501. Si los
+  clientes están tras VPN, configura WAYVIEWER_SERVER_IP en cada cliente.
 
 Variables útiles:
   WAYVIEWER_BIN=/ruta/alternativa/wayviewer
