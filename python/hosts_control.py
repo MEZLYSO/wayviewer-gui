@@ -37,7 +37,7 @@ def validate_list(items:object)->tuple[list[str]|None,str]:
         if domain is None:invalid.append(str(item)[:80])
         elif domain not in valid:valid.append(domain)
     if invalid:return None,"dominio inválido: "+", ".join(invalid[:3])
-    valid.sort()
+    # Mantener el orden de entrada para emitir /etc/hosts igual que la UI.
     return valid,""
 
 def load_local()->list[str]:
