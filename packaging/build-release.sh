@@ -44,7 +44,7 @@ contraseña local de sudo y la conserva únicamente en memoria hasta cerrar.
 Dependencias del sistema:
   - Python 3 + tkinter
   - FFmpeg (ffplay)
-  - libsrt, libwayland, libdrm, mesa (para el binario wayviewer)
+  - libsrt ABI 1.5, libwayland, libdrm, mesa (para el binario wayviewer)
   - gtk3 (opcional, para el selector de archivos nativo)
 
 Ejecutar:
