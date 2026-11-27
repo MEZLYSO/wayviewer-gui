@@ -229,6 +229,96 @@ def unique_path(directory: str, name: str) -> str:
     return candidate
 
 
+def validate_ip_text(value: object, label: str) -> tuple[str, str]:
+    """Valida una IP literal; evita inyectar URLs o comandos en ffplay."""
+    text = str(value or "").strip()
+    if not text:
+        return "", f"{label} no puede estar vacía."
+    if any(char.isspace() for char in text):
+        return "", f"{label} no puede contener espacios."
+    try:
+        ipaddress.ip_address(text)
+    except ValueError:
+        return "", f"{label} no es una IP válida."
+    return text, ""
+
+
+def validate_stream_values(
+    raw: dict, ip_label: str = "La IP de destino"
+) -> tuple[dict | None, str]:
+    """Valida los parámetros compartidos por la vista local y la remota."""
+    ip_text, error = validate_ip_text(raw.get("ip", ""), ip_label)
+    if error:
+        return None, error
+
+    try:
+        port = int(str(raw.get("port", "")).strip())
+    except ValueError:
+        return None, "El puerto SRT debe ser un número entero."
+    if not 1 <= port <= 65535:
+        return None, "El puerto SRT debe estar entre 1 y 65535."
+
+    try:
+        latency = int(str(raw.get("latency", "")).strip())
+    except ValueError:
+        return None, "La latencia del cliente debe ser un número entero."
+    if latency < 1:
+        return None, "La latencia del cliente debe ser mayor que cero."
+
+    probesize_text = str(raw.get("probesize", "") or "").strip()
+    analyzeduration_text = str(raw.get("analyzeduration", "") or "").strip()
+    for label, text in (
+        ("probesize", probesize_text),
+        ("analyzeduration", analyzeduration_text),
+    ):
+        if not text:
+            continue
+        try:
+            value = int(text)
+        except ValueError:
+            return None, f"{label} debe ser un número entero."
+        if value < 0:
+            return None, f"{label} no puede ser negativo."
+
+    return {
+        "ip": ip_text,
+        "port": port,
+        "latency": latency,
+        "probesize": probesize_text or None,
+        "analyzeduration": analyzeduration_text or None,
+        "nobuffer": bool(raw.get("nobuffer", False)),
+        "low_delay": bool(raw.get("low_delay", False)),
+        "framedrop": bool(raw.get("framedrop", False)),
+        "tlpktdrop": bool(raw.get("tlpktdrop", False)),
+    }, ""
+
+
+def build_srt_url(values: dict) -> str:
+    host = values["ip"]
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    url = f"srt://{host}:{values['port']}?mode=caller&latency={values['latency']}"
+    if values["tlpktdrop"]:
+        url += "&tlpktdrop=1"
+    return url
+
+
+def build_ffplay_args(values: dict) -> list[str]:
+    args = ["ffplay"]
+    if values["probesize"] is not None:
+        args += ["-probesize", str(values["probesize"])]
+    if values["analyzeduration"] is not None:
+        args += ["-analyzeduration", str(values["analyzeduration"])]
+    if values["nobuffer"]:
+        args += ["-fflags", "nobuffer"]
+    if values["low_delay"]:
+        args += ["-flags", "low_delay"]
+    if values["framedrop"]:
+        args.append("-framedrop")
+    args.append(build_srt_url(values))
+    return args
+
+
 GTK_PICKER_SCRIPT = r"""
 import os
 import sys
@@ -527,6 +617,8 @@ class TcpChat:
             detail = fields[3] if len(fields) > 3 else ""
             if remote_action == "hosts":
                 self.events.put(("hosts_ack", f"{int(ok)}\t{detail}"))
+            elif remote_action == "view":
+                self.events.put(("view_ack", f"{int(ok)}\t{detail}"))
             else:
                 self.events.put(
                     ("control_ack", f"{remote_action}\t{int(ok)}\t{detail}")
@@ -862,6 +954,10 @@ class WayViewerPanel:
 
         self.var_client_ip = tk.StringVar(value="")
         self.var_client_latency = tk.StringVar(value="200")
+        self.var_viewer_ip = tk.StringVar(value="")
+        self.var_view_source_ip = tk.StringVar(value="")
+        self.view_pending: dict | None = None
+        self.view_timeout_after: str | None = None
         self.var_probesize = tk.StringVar(value="65536")
         self.var_analyzeduration = tk.StringVar(value="100000")
         self.var_nobuffer = tk.BooleanVar(value=True)
@@ -1050,6 +1146,8 @@ class WayViewerPanel:
         self._arrange_cards()
         self._arrange_client_fields()
         self._arrange_footer()
+        self._arrange_view_fields()
+        self._arrange_view_actions()
         self._arrange_file_row()
         self._arrange_control_row()
         self._arrange_hosts_actions()
@@ -1119,6 +1217,36 @@ class WayViewerPanel:
             self.connect_btn.grid(row=0, column=0, sticky="w")
             self.client_status.grid(
                 row=0, column=1, sticky="ew", padx=(14, 0)
+            )
+
+    def _arrange_view_fields(self) -> None:
+        if not hasattr(self, "viewer_cell"):
+            return
+        positions = ((0, 0), (1, 0)) if self.layout_mode == "narrow" else ((0, 0), (0, 1))
+        for cell, (row, column) in zip(
+            (self.viewer_cell, self.view_source_cell), positions
+        ):
+            cell.grid_configure(row=row, column=column)
+
+    def _arrange_view_actions(self) -> None:
+        if not hasattr(self, "view_actions"):
+            return
+        row = self.view_actions
+        self.view_start_btn.grid_forget()
+        self.view_stop_btn.grid_forget()
+        self.view_status.grid_forget()
+        row.grid_columnconfigure(2, weight=1)
+        if self.layout_mode == "narrow":
+            self.view_start_btn.grid(row=0, column=0, sticky="w")
+            self.view_stop_btn.grid(row=0, column=1, sticky="w", padx=(8, 0))
+            self.view_status.grid(
+                row=1, column=0, columnspan=3, sticky="ew", pady=(6, 0)
+            )
+        else:
+            self.view_start_btn.grid(row=0, column=0, sticky="w")
+            self.view_stop_btn.grid(row=0, column=1, sticky="w", padx=(8, 0))
+            self.view_status.grid(
+                row=0, column=2, sticky="ew", padx=(12, 0)
             )
 
     def _arrange_file_row(self) -> None:
@@ -1525,6 +1653,76 @@ class WayViewerPanel:
         )
         self.client_status.grid(row=0, column=1, sticky="ew", padx=(14, 0))
         self._bind_wrap(self.client_status, 110)
+
+        # --- Mostrar en otro cliente --------------------------------------
+        view_box = tk.Frame(cx, bg=PANEL)
+        self.view_box = view_box
+        view_box.pack(fill="x", pady=(12, 0))
+        tk.Frame(view_box, bg=BORDER, height=1).pack(fill="x")
+        tk.Label(
+            view_box,
+            text="Mostrar en otro cliente",
+            bg=PANEL, fg=FG, font=CARD_TITLE,
+        ).pack(anchor="w", pady=(8, 0))
+        view_hint = tk.Label(
+            view_box,
+            text=(
+                "El cliente que mirará usa su propio chat; el admin conecta "
+                "con él y le envía la orden. Misma SRT, puerto y latencia."
+            ),
+            bg=PANEL, fg=MUTED, font=("DejaVu Sans", 9),
+            anchor="w", justify="left",
+        )
+        view_hint.pack(fill="x")
+        self._bind_wrap(view_hint, 110)
+
+        view_grid = tk.Frame(view_box, bg=PANEL)
+        self.view_grid = view_grid
+        view_grid.pack(fill="x", pady=(6, 0))
+        viewer_cell = self._field_cell(view_grid, 0, "Cliente que mirará")
+        self.viewer_cell = viewer_cell
+        self.viewer_entry = self._dark_entry(
+            viewer_cell, self.var_viewer_ip, 16
+        )
+        self.viewer_entry.pack(anchor="w", pady=(4, 0), ipady=3)
+        view_source_cell = self._field_cell(
+            view_grid, 1, "Cliente que transmite"
+        )
+        self.view_source_cell = view_source_cell
+        self._dark_entry(
+            view_source_cell, self.var_view_source_ip, 16
+        ).pack(anchor="w", pady=(4, 0), ipady=3)
+
+        view_actions = tk.Frame(view_box, bg=PANEL)
+        self.view_actions = view_actions
+        view_actions.pack(fill="x", pady=(2, 0))
+        self.view_start_btn = tk.Button(
+            view_actions,
+            text="Conectar cliente",
+            command=self._request_view_start,
+            bg=ACCENT, fg="#ffffff",
+            activebackground="#1f6feb", activeforeground="#ffffff",
+            disabledforeground="#6e7681", relief="flat",
+            padx=14, pady=5, cursor="hand2",
+            font=("DejaVu Sans", 9, "bold"),
+        )
+        self.view_stop_btn = tk.Button(
+            view_actions,
+            text="Detener cliente",
+            command=self._request_view_stop,
+            bg="#3d1a1a", fg=RED,
+            activebackground="#552222", activeforeground="#ffffff",
+            disabledforeground="#6e7681", relief="flat",
+            padx=14, pady=5, cursor="hand2",
+            font=("DejaVu Sans", 9, "bold"),
+        )
+        self.view_status = tk.Label(
+            view_actions,
+            text="Escribe la IP del cliente que mirará.",
+            bg=PANEL, fg=MUTED, font=("DejaVu Sans", 9),
+            anchor="w", justify="left", wraplength=320,
+        )
+        self._bind_wrap(self.view_status, 100)
 
         # --- Chat TCP -----------------------------------------------------
         tk.Frame(cx, bg=BORDER, height=1).pack(fill="x", pady=(14, 0))
@@ -2108,61 +2306,25 @@ class WayViewerPanel:
         self.root.after(8000, self._auto_refresh_interfaces)
 
     # ------------------------------------------------------- comando cliente
-    def _validated_client_values(self) -> dict | None:
-        ip_text = self.var_client_ip.get().strip()
-        if not ip_text:
-            self._client_error("La IP de destino no puede estar vacía.")
-            return None
-        if any(char.isspace() for char in ip_text):
-            self._client_error("La IP de destino no puede contener espacios.")
-            return None
-
-        try:
-            port = int(self.var_srt_port.get())
-        except ValueError:
-            self._client_error("El puerto SRT debe ser un número entero.")
-            return None
-        if not 1 <= port <= 65535:
-            self._client_error("El puerto SRT debe estar entre 1 y 65535.")
-            return None
-
-        try:
-            latency = int(self.var_client_latency.get())
-        except ValueError:
-            self._client_error("La latencia del cliente debe ser un número entero.")
-            return None
-        if latency < 1:
-            self._client_error("La latencia del cliente debe ser mayor que cero.")
-            return None
-
-        probesize_text = self.var_probesize.get().strip()
-        analyzeduration_text = self.var_analyzeduration.get().strip()
-        for label, text in (
-            ("probesize", probesize_text),
-            ("analyzeduration", analyzeduration_text),
-        ):
-            if not text:
-                continue
-            try:
-                value = int(text)
-            except ValueError:
-                self._client_error(f"{label} debe ser un número entero.")
-                return None
-            if value < 0:
-                self._client_error(f"{label} no puede ser negativo.")
-                return None
-
+    def _stream_values_from_vars(self, ip_text: str = "") -> dict:
         return {
-            "ip": ip_text,
-            "port": port,
-            "latency": latency,
-            "probesize": probesize_text or None,
-            "analyzeduration": analyzeduration_text or None,
+            "ip": ip_text or self.var_client_ip.get(),
+            "port": self.var_srt_port.get(),
+            "latency": self.var_client_latency.get(),
+            "probesize": self.var_probesize.get(),
+            "analyzeduration": self.var_analyzeduration.get(),
             "nobuffer": self.var_nobuffer.get(),
             "low_delay": self.var_low_delay.get(),
             "framedrop": self.var_framedrop.get(),
             "tlpktdrop": self.var_tlpktdrop.get(),
         }
+
+    def _validated_client_values(self) -> dict | None:
+        values, error = validate_stream_values(self._stream_values_from_vars())
+        if error:
+            self._client_error(error)
+            return None
+        return values
 
     def _client_error(self, message: str) -> None:
         messagebox.showerror(
@@ -2170,26 +2332,136 @@ class WayViewerPanel:
         )
 
     def _build_client_command(self, values: dict) -> list[str]:
-        url = (
-            f"srt://{values['ip']}:{values['port']}"
-            f"?mode=caller&latency={values['latency']}"
-        )
-        if values["tlpktdrop"]:
-            url += "&tlpktdrop=1"
+        return build_ffplay_args(values)
 
-        args = ["ffplay"]
-        if values["probesize"] is not None:
-            args += ["-probesize", str(values["probesize"])]
-        if values["analyzeduration"] is not None:
-            args += ["-analyzeduration", str(values["analyzeduration"])]
-        if values["nobuffer"]:
-            args += ["-fflags", "nobuffer"]
-        if values["low_delay"]:
-            args += ["-flags", "low_delay"]
-        if values["framedrop"]:
-            args.append("-framedrop")
-        args.append(url)
-        return args
+    # ------------------------------ mostrar en otro cliente (control remoto)
+    def _set_view_status(self, message: str, color: str = MUTED) -> None:
+        if hasattr(self, "view_status"):
+            self.view_status.configure(text=message, fg=color)
+
+    def _request_view_start(self) -> None:
+        viewer_ip, error = validate_ip_text(
+            self.var_viewer_ip.get(), "La IP del cliente que mirará"
+        )
+        if error:
+            messagebox.showerror("Cliente que mirará", error, parent=self.root)
+            return
+        source_ip = self.var_view_source_ip.get().strip() or self.var_client_ip.get()
+        values, error = validate_stream_values(
+            self._stream_values_from_vars(source_ip),
+            ip_label="La IP del cliente que transmite",
+        )
+        if error:
+            messagebox.showerror("Cliente que transmite", error, parent=self.root)
+            return
+        self.var_view_source_ip.set(source_ip)
+        self._send_view_request("start", viewer_ip, values)
+
+    def _request_view_stop(self) -> None:
+        viewer_ip, error = validate_ip_text(
+            self.var_viewer_ip.get(), "La IP del cliente que mirará"
+        )
+        if error:
+            messagebox.showerror("Cliente que mirará", error, parent=self.root)
+            return
+        self._send_view_request("stop", viewer_ip, {})
+
+    def _send_view_request(
+        self, action: str, viewer_ip: str, values: dict
+    ) -> None:
+        if self.view_pending is not None:
+            self._set_view_status(
+                "Esperando la respuesta anterior…", AMBER
+            )
+            return
+        self.view_pending = {
+            "action": action,
+            "viewer_ip": viewer_ip,
+            "values": values,
+            "phase": "connecting",
+        }
+        self.view_start_btn.configure(state="disabled")
+        self.view_stop_btn.configure(state="disabled")
+        self._set_view_status(
+            f"Conectando con {viewer_ip}…", AMBER
+        )
+        self._schedule_view_timeout()
+
+        if self.chat_connected and self.active_client_ip == viewer_ip:
+            self.view_pending["phase"] = "sending"
+            self._dispatch_view_request(self.view_pending)
+            return
+        if self.chat_connecting:
+            self._finish_view_request(
+                False, "El chat está conectando; espera antes de repetir."
+            )
+            return
+        if self.chat_connected:
+            # El chat del admin es 1 a 1: soltamos al transmisor para dar la
+            # orden al cliente que mirará. La transmisión SRT sigue activa.
+            self.chat.disconnect()
+        if not self.chat.connect(viewer_ip):
+            self._finish_view_request(
+                False, "No se pudo iniciar la conexión con el cliente."
+            )
+
+    def _dispatch_view_request(self, pending: dict) -> None:
+        action = pending["action"]
+        if not self.chat_connected:
+            self._finish_view_request(
+                False, "El chat se desconectó antes de enviar la orden."
+            )
+            return
+        if action == "start":
+            line = sway_control.build_view_start(pending["values"])
+            detail = (
+                f"Orden enviada a {pending['viewer_ip']}: ver "
+                f"{pending['values']['ip']}:{pending['values']['port']}."
+            )
+        else:
+            line = sway_control.build_view_stop()
+            detail = f"Orden de parada enviada a {pending['viewer_ip']}."
+        if not self.chat.send_control(line):
+            self._finish_view_request(
+                False, "No se pudo enviar la orden; el chat se desconectó."
+            )
+            return
+        self._set_view_status(
+            f"Esperando respuesta de {pending['viewer_ip']}…", AMBER
+        )
+        self._chat_append("system", f"Mostrar en otro cliente: {detail}")
+
+    def _schedule_view_timeout(self) -> None:
+        self._cancel_view_timeout()
+        self.view_timeout_after = self.root.after(
+            15000, self._on_view_timeout
+        )
+
+    def _cancel_view_timeout(self) -> None:
+        if self.view_timeout_after is None:
+            return
+        try:
+            self.root.after_cancel(self.view_timeout_after)
+        except (RuntimeError, tk.TclError):
+            pass
+        self.view_timeout_after = None
+
+    def _on_view_timeout(self) -> None:
+        self.view_timeout_after = None
+        if self.view_pending is not None:
+            self._finish_view_request(
+                False, "El cliente no respondió a tiempo."
+            )
+
+    def _finish_view_request(self, ok: bool, detail: str) -> None:
+        self.view_pending = None
+        self._cancel_view_timeout()
+        self.view_start_btn.configure(state="normal")
+        self.view_stop_btn.configure(state="normal")
+        color = GREEN if ok else RED
+        self._set_view_status(detail, color)
+        kind = "system" if ok else "error"
+        self._chat_append(kind, f"Mostrar en otro cliente: {detail}")
 
     def _toggle_connection(self) -> None:
         if self.ffplay_proc is not None:
@@ -2575,6 +2847,7 @@ class WayViewerPanel:
                     self._refresh_clients()
                 elif kind == "chat_connected":
                     self.chat_connecting = False
+                    ip_text = ""
                     if payload.startswith("Conexión entrante de "):
                         peer = payload.split("Conexión entrante de ", 1)[1].strip()
                         ip_text = peer.rsplit(":", 1)[0]
@@ -2583,21 +2856,41 @@ class WayViewerPanel:
                             self.active_client_ip = ip_text
                     elif payload.startswith("Chat conectado a "):
                         ip_text = payload.split("Chat conectado a ", 1)[1].strip()
-                        self.active_client_ip = ip_text.rsplit(":", 1)[0]
+                        ip_text = ip_text.rsplit(":", 1)[0]
+                        self.active_client_ip = ip_text
                     self._apply_chat_state(True)
                     self._refresh_clients()
                     self._chat_append("system", payload)
+                    pending = self.view_pending
+                    if pending and pending["phase"] == "connecting":
+                        if ip_text == pending["viewer_ip"]:
+                            pending["phase"] = "sending"
+                            self._dispatch_view_request(pending)
+                        else:
+                            self._finish_view_request(
+                                False,
+                                f"El chat conectó con {ip_text}, no con "
+                                f"{pending['viewer_ip']}.",
+                            )
                 elif kind == "chat_disconnected":
                     self.chat_connecting = False
                     self.active_client_ip = ""
                     self._apply_chat_state(False)
                     self._refresh_clients()
                     self._chat_append("system", payload)
+                    if self.view_pending and self.view_pending["phase"] == "sending":
+                        self._finish_view_request(
+                            False, "El cliente se desconectó antes de responder."
+                        )
                 elif kind == "chat_error":
                     self.chat_connecting = False
                     if not self.chat_connected:
                         self._apply_chat_state(False)
                     self._chat_append("error", payload)
+                    if self.view_pending:
+                        self._finish_view_request(
+                            False, "No se pudo conectar con el cliente."
+                        )
                 elif kind == "chat_incoming":
                     self._chat_append("incoming", payload)
                 elif kind == "chat_system":
@@ -2639,6 +2932,12 @@ class WayViewerPanel:
                         self._set_host_status(detail or "Lista aplicada.", GREEN)
                     else:
                         self._set_host_status(detail or "El cliente rechazó la lista.", RED)
+                elif kind == "view_ack":
+                    ok_text, detail = self._split_payload(payload)
+                    self._finish_view_request(
+                        ok_text == "1",
+                        detail or ("Orden aceptada." if ok_text == "1" else "Orden rechazada."),
+                    )
                 elif kind == "file_pick_done":
                     self.picking_file = False
                     self.file_btn.configure(
@@ -3188,6 +3487,7 @@ class WayViewerPanel:
                 return
             self.shutting_down = True
         self.closing = True
+        self._cancel_view_timeout()
         self.stop_requested.set()
         self._terminate_ffplay(grace=min(0.6, grace))
         self.chat.stop()

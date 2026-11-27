@@ -56,6 +56,17 @@ def build_hosts_set(domains: list[str]) -> str:
     return f"{MAGIC}\thosts\tset\t{payload}"
 
 
+def build_view_start(values: dict) -> str:
+    """Pide a un cliente que abra ffplay contra la SRT de otro cliente."""
+    payload = json.dumps(values, ensure_ascii=True, separators=(",", ":"))
+    return f"{MAGIC}\tview\tstart\t{payload}"
+
+
+def build_view_stop() -> str:
+    """Pide a un cliente que cierre el ffplay remoto."""
+    return f"{MAGIC}\tview\tstop"
+
+
 def parse(line: str) -> tuple[dict | None, str]:
     """Interpreta una línea de control recibida del cliente.
 
