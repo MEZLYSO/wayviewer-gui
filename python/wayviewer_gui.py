@@ -35,7 +35,7 @@ import sway_control
 import ping_control
 import hosts_control
 import power_control
-import power_control
+import discovery
 
 try:
     import tkinter as tk
@@ -972,6 +972,7 @@ class WayViewerPanel:
         }
         self.event_queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self.chat_events: queue.Queue[tuple[str, str]] = queue.Queue()
+        self.discovery_stop = threading.Event()
         self.chat_connected = False
         self.chat_connecting = False
         self.picking_file = False
@@ -1008,6 +1009,10 @@ class WayViewerPanel:
         self.chat = TcpChat(CHAT_PORT, self.chat_events)
         self._apply_chat_state(False)
         self._refresh_interfaces(force=True)
+        discovery.start_broadcaster(
+            lambda: (socket.gethostname(), self.primary_ip, CHAT_PORT, "1"),
+            self.discovery_stop,
+        )
         self._apply_state("stopped")
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.bind("<F5>", lambda _event: self._refresh_interfaces(force=True))
@@ -1297,9 +1302,9 @@ class WayViewerPanel:
         narrow = self.layout_mode == "narrow"
         self.header_subtitle.configure(
             text=(
-                "Cliente · chat y bloqueo"
+                "Cliente · chat y LAN"
                 if narrow
-                else "Cliente: recepción, chat y bloqueo"
+                else "Cliente: chat, bloqueo y anuncio LAN"
             )
         )
         self.refresh_btn.configure(
@@ -2795,6 +2800,7 @@ class WayViewerPanel:
         self.stop_requested.set()
         self._terminate_ffplay(grace=min(0.6, grace))
         self.chat.stop()
+        self.discovery_stop.set()
         self._terminate_picker()
         self._terminate_all(grace=grace)
         # Si esta instancia había bloqueado la entrada, devolverla.

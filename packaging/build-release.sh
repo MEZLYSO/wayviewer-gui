@@ -28,6 +28,7 @@ install -m 0644 "${ROOT}/python/power_control.py" "${DEST}/python/"
 install -m 0755 "${ROOT}/python/wayviewer_power_helper.py" "${DEST}/python/"
 install -m 0755 "${ROOT}/python/wayviewer_hosts_helper.py" "${DEST}/python/"
 install -m 0644 "${ROOT}/python/hosts_control.py" "${DEST}/python/"
+install -m 0644 "${ROOT}/python/discovery.py" "${DEST}/python/"
 install -m 0755 "${ROOT}/packaging/install-nft-helper.sh" "${DEST}/"
 install -m 0755 "${ROOT}/packaging/install-power-helper.sh" "${DEST}/"
 install -m 0755 "${ROOT}/packaging/install-hosts-helper.sh" "${DEST}/"
@@ -66,9 +67,14 @@ El instalador comprueba libc y bibliotecas. El binario del repositorio puede
 ser específico de Void/musl; para Debian/Arch usa un build nativo con:
   sudo env WAYVIEWER_BIN=/ruta/al/wayviewer ./packaging/install-master.sh \$USER
 
+Descubrimiento LAN:
+  Este cliente anuncia su presencia por UDP en el puerto 9501 para que el
+  panel de administración pueda mostrarlo.
+
 Variables útiles:
   WAYVIEWER_BIN=/ruta/alternativa/wayviewer
   WAYVIEWER_CHAT_PORT=9500
+  WAYVIEWER_DISCOVERY_PORT=9501
   WAYVIEWER_UNIX_SOCKET=/tmp/wayviewer-\$UID.sock
 README
 OUT="${ROOT}/dist"
