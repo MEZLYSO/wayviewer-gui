@@ -1166,7 +1166,13 @@ class WayViewerPanel:
 
     def _arrange_cards(self) -> None:
         columns = self.columns_frame
-        for card in (self.clients_card, self.tx_card, self.cx_card, self.hosts_card):
+        for card in (
+            self.clients_card,
+            self.tx_card,
+            self.view_card,
+            self.cx_card,
+            self.hosts_card,
+        ):
             card.grid_forget()
         columns.grid_columnconfigure(0, weight=0, minsize=362)
         columns.grid_columnconfigure(1, weight=1)
@@ -1175,20 +1181,26 @@ class WayViewerPanel:
             columns.grid_rowconfigure(1, weight=1)
             columns.grid_rowconfigure(2, weight=0)
             columns.grid_rowconfigure(3, weight=0)
+            columns.grid_rowconfigure(4, weight=0)
             self.tx_card.grid(row=1, column=0, sticky="nsew", padx=(0, 16))
             self.cx_card.grid(row=1, column=1, sticky="nsew")
-            self.hosts_card.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(16, 0))
+            self.view_card.grid(row=2, column=0, sticky="ew", padx=(0, 16), pady=(14, 0))
+            self.hosts_card.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(16, 0))
         else:
             columns.grid_columnconfigure(0, weight=1, minsize=0)
             columns.grid_columnconfigure(1, weight=0, minsize=0)
             columns.grid_rowconfigure(1, weight=0)
             columns.grid_rowconfigure(2, weight=0)
             columns.grid_rowconfigure(3, weight=0)
+            columns.grid_rowconfigure(4, weight=0)
             self.tx_card.grid(
                 row=1, column=0, columnspan=2, sticky="ew", pady=(14, 0)
             )
-            self.cx_card.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(14, 0))
-            self.hosts_card.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(14, 0))
+            self.view_card.grid(
+                row=2, column=0, columnspan=2, sticky="ew", pady=(14, 0)
+            )
+            self.cx_card.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(14, 0))
+            self.hosts_card.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(14, 0))
 
     def _arrange_client_fields(self) -> None:
         if self.layout_mode == "narrow":
@@ -1444,6 +1456,7 @@ class WayViewerPanel:
         columns.grid_rowconfigure(1, weight=1)
         columns.grid_rowconfigure(2, weight=0)
         columns.grid_rowconfigure(3, weight=0)
+        columns.grid_rowconfigure(4, weight=0)
 
         # --- Clientes descubiertos en la LAN -----------------------------
         clients_card, clients_inner = self._make_card(
@@ -1590,6 +1603,61 @@ class WayViewerPanel:
         )
         self.status_detail.pack(fill="x")
 
+        # --- Mostrar en otro cliente --------------------------------------
+        view_card, view = self._make_card(
+            columns, "Mostrar en otro cliente", ACCENT
+        )
+        self.view_card = view_card
+        view_card.grid(row=2, column=0, sticky="ew", padx=(0, 16))
+
+        view_grid = tk.Frame(view, bg=PANEL)
+        self.view_grid = view_grid
+        view_grid.pack(fill="x", pady=(10, 0))
+        viewer_cell = self._field_cell(view_grid, 0, "Cliente que mirará")
+        self.viewer_cell = viewer_cell
+        self.viewer_entry = self._dark_entry(
+            viewer_cell, self.var_viewer_ip, 16
+        )
+        self.viewer_entry.pack(anchor="w", pady=(4, 0), ipady=3)
+        view_source_cell = self._field_cell(
+            view_grid, 1, "Servidor SRT"
+        )
+        self.view_source_cell = view_source_cell
+        self._dark_entry(
+            view_source_cell, self.var_view_source_ip, 16
+        ).pack(anchor="w", pady=(4, 0), ipady=3)
+
+        view_actions = tk.Frame(view, bg=PANEL)
+        self.view_actions = view_actions
+        view_actions.pack(fill="x", pady=(10, 0))
+        self.view_start_btn = tk.Button(
+            view_actions,
+            text="Conectar cliente",
+            command=self._request_view_start,
+            bg=ACCENT, fg="#ffffff",
+            activebackground="#1f6feb", activeforeground="#ffffff",
+            disabledforeground="#6e7681", relief="flat",
+            padx=14, pady=5, cursor="hand2",
+            font=("DejaVu Sans", 9, "bold"),
+        )
+        self.view_stop_btn = tk.Button(
+            view_actions,
+            text="Detener cliente",
+            command=self._request_view_stop,
+            bg="#3d1a1a", fg=RED,
+            activebackground="#552222", activeforeground="#ffffff",
+            disabledforeground="#6e7681", relief="flat",
+            padx=14, pady=5, cursor="hand2",
+            font=("DejaVu Sans", 9, "bold"),
+        )
+        self.view_status = tk.Label(
+            view_actions,
+            text="",
+            bg=PANEL, fg=MUTED, font=("DejaVu Sans", 9),
+            anchor="w", justify="left", wraplength=320,
+        )
+        self._bind_wrap(self.view_status, 100)
+
         # --- Columna derecha: Conectar ------------------------------------
         cx_card, cx = self._make_card(columns, "Conectar", ACCENT)
         self.cx_card = cx_card
@@ -1653,76 +1721,6 @@ class WayViewerPanel:
         )
         self.client_status.grid(row=0, column=1, sticky="ew", padx=(14, 0))
         self._bind_wrap(self.client_status, 110)
-
-        # --- Mostrar en otro cliente --------------------------------------
-        view_box = tk.Frame(cx, bg=PANEL)
-        self.view_box = view_box
-        view_box.pack(fill="x", pady=(12, 0))
-        tk.Frame(view_box, bg=BORDER, height=1).pack(fill="x")
-        tk.Label(
-            view_box,
-            text="Mostrar en otro cliente",
-            bg=PANEL, fg=FG, font=CARD_TITLE,
-        ).pack(anchor="w", pady=(8, 0))
-        view_hint = tk.Label(
-            view_box,
-            text=(
-                "El cliente que mirará usa su propio chat; el admin conecta "
-                "con él y le envía la orden. Misma SRT, puerto y latencia."
-            ),
-            bg=PANEL, fg=MUTED, font=("DejaVu Sans", 9),
-            anchor="w", justify="left",
-        )
-        view_hint.pack(fill="x")
-        self._bind_wrap(view_hint, 110)
-
-        view_grid = tk.Frame(view_box, bg=PANEL)
-        self.view_grid = view_grid
-        view_grid.pack(fill="x", pady=(6, 0))
-        viewer_cell = self._field_cell(view_grid, 0, "Cliente que mirará")
-        self.viewer_cell = viewer_cell
-        self.viewer_entry = self._dark_entry(
-            viewer_cell, self.var_viewer_ip, 16
-        )
-        self.viewer_entry.pack(anchor="w", pady=(4, 0), ipady=3)
-        view_source_cell = self._field_cell(
-            view_grid, 1, "Cliente que transmite"
-        )
-        self.view_source_cell = view_source_cell
-        self._dark_entry(
-            view_source_cell, self.var_view_source_ip, 16
-        ).pack(anchor="w", pady=(4, 0), ipady=3)
-
-        view_actions = tk.Frame(view_box, bg=PANEL)
-        self.view_actions = view_actions
-        view_actions.pack(fill="x", pady=(2, 0))
-        self.view_start_btn = tk.Button(
-            view_actions,
-            text="Conectar cliente",
-            command=self._request_view_start,
-            bg=ACCENT, fg="#ffffff",
-            activebackground="#1f6feb", activeforeground="#ffffff",
-            disabledforeground="#6e7681", relief="flat",
-            padx=14, pady=5, cursor="hand2",
-            font=("DejaVu Sans", 9, "bold"),
-        )
-        self.view_stop_btn = tk.Button(
-            view_actions,
-            text="Detener cliente",
-            command=self._request_view_stop,
-            bg="#3d1a1a", fg=RED,
-            activebackground="#552222", activeforeground="#ffffff",
-            disabledforeground="#6e7681", relief="flat",
-            padx=14, pady=5, cursor="hand2",
-            font=("DejaVu Sans", 9, "bold"),
-        )
-        self.view_status = tk.Label(
-            view_actions,
-            text="Escribe la IP del cliente que mirará.",
-            bg=PANEL, fg=MUTED, font=("DejaVu Sans", 9),
-            anchor="w", justify="left", wraplength=320,
-        )
-        self._bind_wrap(self.view_status, 100)
 
         # --- Chat TCP -----------------------------------------------------
         tk.Frame(cx, bg=BORDER, height=1).pack(fill="x", pady=(14, 0))
@@ -2349,10 +2347,10 @@ class WayViewerPanel:
         source_ip = self.var_view_source_ip.get().strip() or self.var_client_ip.get()
         values, error = validate_stream_values(
             self._stream_values_from_vars(source_ip),
-            ip_label="La IP del cliente que transmite",
+            ip_label="La IP del servidor SRT",
         )
         if error:
-            messagebox.showerror("Cliente que transmite", error, parent=self.root)
+            messagebox.showerror("Servidor SRT", error, parent=self.root)
             return
         self.var_view_source_ip.set(source_ip)
         self._send_view_request("start", viewer_ip, values)
