@@ -1105,16 +1105,11 @@ class WayViewerPanel:
 
         row = tk.Frame(inner, bg=HEADER)
         row.pack(fill="x", pady=(14, 0))
-        self.interfaces_label = tk.Label(
-            row, text="RED LOCAL", bg=HEADER, fg=MUTED,
-            font=("DejaVu Sans", 8, "bold"),
-        )
-        self.interfaces_label.pack(side="left", padx=(0, 14))
         self.chips = tk.Frame(row, bg=HEADER)
         self.chips.pack(side="left", fill="x", expand=True)
 
     def _make_card(
-        self, parent: tk.Widget, eyebrow: str, title: str, accent: str
+        self, parent: tk.Widget, title: str, accent: str
     ) -> tuple[tk.Frame, tk.Frame]:
         card = tk.Frame(
             parent, bg=PANEL, highlightthickness=1, highlightbackground=BORDER
@@ -1123,13 +1118,9 @@ class WayViewerPanel:
         inner = tk.Frame(card, bg=PANEL)
         inner.pack(fill="both", expand=True, padx=16, pady=(12, 16))
         tk.Label(
-            inner, text=eyebrow, bg=PANEL, fg=MUTED,
-            font=("DejaVu Sans", 8, "bold"),
-        ).pack(anchor="w")
-        tk.Label(
             inner, text=title, bg=PANEL, fg=FG,
             font=("DejaVu Sans", 14, "bold"),
-        ).pack(anchor="w", pady=(2, 0))
+        ).pack(anchor="w")
         return card, inner
 
     def _field_cell(
@@ -1308,9 +1299,6 @@ class WayViewerPanel:
         self.refresh_btn.configure(
             text="↻ IPs" if narrow else "↻  Actualizar IPs"
         )
-        self.interfaces_label.configure(
-            text="RED" if narrow else "RED LOCAL"
-        )
 
     def _arrange_chat_head(self) -> None:
         self.chat_btn.pack_forget()
@@ -1378,9 +1366,7 @@ class WayViewerPanel:
         columns.grid_rowconfigure(0, weight=1)
 
         # --- Columna izquierda: Transmitir imagen -------------------------
-        tx_card, tx = self._make_card(
-            columns, "EMISIÓN", "Transmitir imagen", GREEN
-        )
+        tx_card, tx = self._make_card(columns, "Transmitir imagen", GREEN)
         self.tx_card = tx_card
         tx_card.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
 
@@ -1437,7 +1423,7 @@ class WayViewerPanel:
         self.status_detail.pack(fill="x")
 
         # --- Columna derecha: Conectar ------------------------------------
-        cx_card, cx = self._make_card(columns, "RECEPCIÓN", "Conectar", ACCENT)
+        cx_card, cx = self._make_card(columns, "Conectar", ACCENT)
         self.cx_card = cx_card
         cx_card.grid(row=0, column=1, sticky="nsew")
 
@@ -1640,10 +1626,6 @@ class WayViewerPanel:
             cx, bg="#0b0e13", highlightthickness=1, highlightbackground=BORDER
         )
         hosts_frame.pack(fill="both", expand=True, pady=(10, 0))
-        tk.Label(
-            hosts_frame, text="DOMINIOS EN /etc/hosts", bg="#0b0e13",
-            fg=MUTED, font=("DejaVu Sans", 8, "bold"),
-        ).pack(anchor="w", padx=8, pady=(6, 2))
         hosts_scroll = tk.Scrollbar(hosts_frame)
         hosts_scroll.pack(side="right", fill="y")
         self.hosts_listbox = tk.Listbox(
