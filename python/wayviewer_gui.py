@@ -2026,7 +2026,7 @@ class WayViewerPanel:
             )
             return
         values, error = validate_stream_values(
-            raw, ip_label="La IP del cliente que transmite"
+            raw, ip_label="La IP del servidor SRT"
         )
         if error:
             self.chat.send_control(
@@ -2071,6 +2071,40 @@ class WayViewerPanel:
             self.viewer_proc = proc
             self.viewer_stopping = False
         self._reader_thread("viewer", proc.stdout)
+        # ffplay puede terminar con código 0 aunque la conexión SRT fallara.
+        # Miramos su salida antes de confirmar la orden al administrador.
+        deadline = time.monotonic() + 5.0
+        output = ""
+        failed = False
+        while time.monotonic() < deadline:
+            output = self._last_output("viewer").strip()
+            lowered = output.lower()
+            if any(
+                marker in lowered
+                for marker in (
+                    "failed", "i/o error", "error while opening", "connection refused"
+                )
+            ):
+                failed = True
+                break
+            if "input #0" in lowered or "stream #0" in lowered:
+                break
+            if proc.poll() is not None:
+                failed = True
+                break
+            time.sleep(0.1)
+        if failed:
+            clean = self._view_output_detail(output, proc.poll())
+            detail = "ffplay no pudo conectar con el servidor SRT"
+            if clean:
+                detail += f": {clean}"
+            self._stop_viewer(grace=0.5)
+            self.chat.send_control(
+                sway_control.build_ack("view", False, detail) + "\n"
+            )
+            self.chat_events.put(("view_status", detail))
+            return
+
         detail = f"viendo {build_srt_url(values)} en este equipo"
         self.chat.send_control(
             sway_control.build_ack("view", True, detail) + "\n"
@@ -2757,6 +2791,25 @@ class WayViewerPanel:
             lines = list(self.last_output[name])
         return "\n".join(lines)
 
+    @staticmethod
+    def _view_output_detail(output: str, returncode: int | None = None) -> str:
+        """Resume la salida de ffplay sin ruido de versión ni progreso."""
+        lines = []
+        for raw in output.splitlines():
+            line = raw.strip().replace("\t", " ").replace("\r", " ")
+            lowered = line.lower()
+            if not line or ("fd=" in lowered and "aq=" in lowered):
+                continue
+            if lowered.startswith(
+                ("ffplay version", "built with", "configuration:", "libav", "libsw")
+            ):
+                continue
+            lines.append(line)
+        detail = " | ".join(lines)[-400:]
+        if not detail and returncode is not None:
+            detail = f"ffplay terminó con código {returncode} sin abrir la transmisión"
+        return detail
+
     def _prepare_socket(self, path: str) -> None:
         if not os.path.exists(path):
             return
@@ -2923,11 +2976,17 @@ class WayViewerPanel:
                     self.viewer_proc = None
                     self.viewer_stopping = False
                 if not was_stopping:
-                    detail = self._last_output("viewer")
-                    message = f"La vista remota terminó con código {returncode}."
-                    if detail:
-                        message += "\n\n" + detail
-                    self._chat_append("error", message)
+                    output = self._view_output_detail(
+                        self._last_output("viewer"), returncode
+                    )
+                    detail = f"La vista remota terminó con código {returncode}."
+                    if output:
+                        detail += f" {output}"
+                    self._chat_append("error", detail)
+                    # Avisamos también al admin aunque ya hubiera ACK ok.
+                    self.chat.send_control(
+                        sway_control.build_ack("view", False, detail) + "\n"
+                    )
 
         self._drain_chat_events()
         self.root.after(100, self._poll)
