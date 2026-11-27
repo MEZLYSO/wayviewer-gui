@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Descubrimiento de clientes WayViewer en la LAN mediante UDP broadcast.
+"""Descubrimiento de clientes WayViewer por UDP.
 
-El cliente emite un anuncio pequeño cada pocos segundos. El panel de
-administración escucha esos anuncios y mantiene una tabla de clientes con su
-última aparición. No hay autenticación: usar solo en redes de confianza.
+El cliente emite un anuncio pequeño cada pocos segundos. Lo envía por broadcast
+para la LAN y, si se configura ``WAYVIEWER_SERVER_IP``, también directamente a
+esa IP para redes VPN donde el broadcast no cruza. El panel de administración
+escucha en UDP 9501 y mantiene la tabla de clientes. Sin autenticación: usar
+solo en redes de confianza.
 """
 from __future__ import annotations
 
@@ -17,6 +19,7 @@ import uuid
 from collections.abc import Callable
 
 PORT = int(os.environ.get("WAYVIEWER_DISCOVERY_PORT", "9501"))
+SERVER_IP = os.environ.get("WAYVIEWER_SERVER_IP", "").strip()
 MAGIC = "WVCLIENT1"
 INTERVAL = 5.0
 EXPIRE_AFTER = 18.0
@@ -35,6 +38,21 @@ def client_id() -> str:
         if value:
             return value[:64]
     return f"node-{uuid.getnode():012x}"[:64]
+
+
+def server_targets() -> list[str]:
+    """IPs del admin a las que enviar el anuncio de forma dirigida."""
+    targets = []
+    for item in SERVER_IP.split(","):
+        value = item.strip()
+        if not value:
+            continue
+        try:
+            ipaddress.ip_address(value)
+        except ValueError:
+            continue
+        targets.append(value)
+    return targets
 
 
 def build(name: str, ip: str, port: int, version: str = "1") -> str:
@@ -88,11 +106,12 @@ def start_broadcaster(
     stop: threading.Event,
     interval: float = INTERVAL,
 ) -> threading.Thread:
-    """Publica el anuncio mientras ``stop`` no esté activo."""
+    """Publica el anuncio en LAN y, si aplica, hacia el admin por VPN."""
 
     def loop() -> None:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        targets = ["<broadcast>", *server_targets()]
         try:
             while not stop.wait(interval):
                 try:
@@ -101,14 +120,13 @@ def start_broadcaster(
                     continue
                 if not ip:
                     continue
-                try:
-                    sock.sendto(
-                        build(name, ip, port, version).encode("utf-8"),
-                        ("<broadcast>", PORT),
-                    )
-                except OSError:
-                    # Algunas redes no permiten broadcast; se reintenta luego.
-                    continue
+                packet = build(name, ip, port, version).encode("utf-8")
+                for target in targets:
+                    try:
+                        sock.sendto(packet, (target, PORT))
+                    except OSError:
+                        # Un destino puede fallar sin impedir los demás.
+                        continue
         finally:
             sock.close()
 

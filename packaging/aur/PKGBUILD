@@ -79,14 +79,16 @@ El instalador comprueba libc y bibliotecas. El binario del repositorio puede
 ser específico de Void/musl; para Debian/Arch usa un build nativo con:
   sudo env WAYVIEWER_BIN=/ruta/al/wayviewer ./packaging/install-master.sh \$USER
 
-Descubrimiento LAN:
-  Este cliente anuncia su presencia por UDP en el puerto 9501 para que el
-  panel de administración pueda mostrarlo.
+Descubrimiento LAN/VPN:
+  Este cliente anuncia su presencia por UDP en el puerto 9501. En LAN usa
+  broadcast; si los equipos están conectados por VPN, define la IP del admin
+  con WAYVIEWER_SERVER_IP para enviar el anuncio de forma dirigida.
 
 Variables útiles:
   WAYVIEWER_BIN=/ruta/alternativa/wayviewer
   WAYVIEWER_CHAT_PORT=9500
   WAYVIEWER_DISCOVERY_PORT=9501
+  WAYVIEWER_SERVER_IP=10.8.0.1
   WAYVIEWER_UNIX_SOCKET=/tmp/wayviewer-\$UID.sock
 EOF
 

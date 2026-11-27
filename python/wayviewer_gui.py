@@ -1302,9 +1302,9 @@ class WayViewerPanel:
         narrow = self.layout_mode == "narrow"
         self.header_subtitle.configure(
             text=(
-                "Cliente · chat y LAN"
+                "Cliente · chat y VPN"
                 if narrow
-                else "Cliente: chat, bloqueo y anuncio LAN"
+                else "Cliente: chat, bloqueo y anuncio LAN/VPN"
             )
         )
         self.refresh_btn.configure(
