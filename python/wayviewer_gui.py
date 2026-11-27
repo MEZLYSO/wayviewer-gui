@@ -438,6 +438,17 @@ class TcpChat:
         with self.lock:
             return self.sock is not None
 
+    def peer_ip(self) -> str:
+        """IP del extremo conectado para responder por el mismo chat."""
+        with self.lock:
+            conn = self.sock
+        if conn is None:
+            return ""
+        try:
+            return conn.getpeername()[0]
+        except OSError:
+            return ""
+
     def _start_server(self) -> None:
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -2400,6 +2411,9 @@ class WayViewerPanel:
                     self._set_control_status(f"Control remoto: {payload}", RED)
                     self._chat_append("error", f"Control remoto: {payload}")
                 elif kind == "view_request":
+                    peer = self.chat.peer_ip()
+                    if peer:
+                        self.var_client_ip.set(peer)
                     subaction, data = self._split_payload(payload)
                     threading.Thread(
                         target=self._view_worker,
