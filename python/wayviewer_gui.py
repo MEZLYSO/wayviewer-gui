@@ -949,16 +949,11 @@ class WayViewerPanel:
 
         row = tk.Frame(inner, bg=HEADER)
         row.pack(fill="x", pady=(14, 0))
-        self.interfaces_label = tk.Label(
-            row, text="RED LOCAL", bg=HEADER, fg=MUTED,
-            font=("DejaVu Sans", 8, "bold"),
-        )
-        self.interfaces_label.pack(side="left", padx=(0, 14))
         self.chips = tk.Frame(row, bg=HEADER)
         self.chips.pack(side="left", fill="x", expand=True)
 
     def _make_card(
-        self, parent: tk.Widget, eyebrow: str, title: str, accent: str
+        self, parent: tk.Widget, title: str, accent: str
     ) -> tuple[tk.Frame, tk.Frame]:
         card = tk.Frame(
             parent, bg=PANEL, highlightthickness=1, highlightbackground=BORDER
@@ -967,13 +962,9 @@ class WayViewerPanel:
         inner = tk.Frame(card, bg=PANEL)
         inner.pack(fill="both", expand=True, padx=16, pady=(12, 16))
         tk.Label(
-            inner, text=eyebrow, bg=PANEL, fg=MUTED,
-            font=("DejaVu Sans", 8, "bold"),
-        ).pack(anchor="w")
-        tk.Label(
             inner, text=title, bg=PANEL, fg=FG,
             font=("DejaVu Sans", 14, "bold"),
-        ).pack(anchor="w", pady=(2, 0))
+        ).pack(anchor="w")
         return card, inner
 
     def _field_cell(
@@ -1257,9 +1248,6 @@ class WayViewerPanel:
         self.refresh_btn.configure(
             text="↻ IPs" if narrow else "↻  Actualizar IPs"
         )
-        self.interfaces_label.configure(
-            text="RED" if narrow else "RED LOCAL"
-        )
 
     def _arrange_chat_head(self) -> None:
         self.chat_btn.pack_forget()
@@ -1331,7 +1319,7 @@ class WayViewerPanel:
 
         # --- Clientes descubiertos en la LAN -----------------------------
         clients_card, clients_inner = self._make_card(
-            columns, "LAN", "Clientes disponibles", ACCENT
+            columns, "Clientes disponibles", ACCENT
         )
         self.clients_card = clients_card
         clients_head = tk.Frame(clients_inner, bg=PANEL)
@@ -1418,9 +1406,7 @@ class WayViewerPanel:
         self.clients_clear_btn.pack(side="left", padx=(8, 0))
 
         # --- Columna izquierda: Transmitir imagen -------------------------
-        tx_card, tx = self._make_card(
-            columns, "EMISIÓN", "Transmitir imagen", GREEN
-        )
+        tx_card, tx = self._make_card(columns, "Transmitir imagen", GREEN)
         self.tx_card = tx_card
         tx_card.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
 
@@ -1477,7 +1463,7 @@ class WayViewerPanel:
         self.status_detail.pack(fill="x")
 
         # --- Columna derecha: Conectar ------------------------------------
-        cx_card, cx = self._make_card(columns, "RECEPCIÓN", "Conectar", ACCENT)
+        cx_card, cx = self._make_card(columns, "Conectar", ACCENT)
         self.cx_card = cx_card
         cx_card.grid(row=0, column=1, sticky="nsew")
 
@@ -1767,7 +1753,7 @@ class WayViewerPanel:
 
         # --- Lista de hosts /etc/hosts ----------------------------------
         hosts_card, hosts_inner = self._make_card(
-            columns, "HOSTS", "Bloquear dominios en /etc/hosts", AMBER
+            columns, "Bloquear dominios en /etc/hosts", AMBER
         )
         self.hosts_card = hosts_card
 
