@@ -51,6 +51,23 @@ install_dependencies() {
         echo "Detectado apt (Debian, Ubuntu, Mint y derivados)."
         apt-get update
         local packages=(python3 python3-tk ffmpeg binutils libwayland-client0 libgbm1 libdrm2 libstdc++6)
+        # La ABI requerida por el binario actual es libsrt.so.1.5. No instalar
+        # libsrt1.4: tiene otro SONAME y no resuelve este error.
+        local srt_package=""
+        local candidate metadata
+        for candidate in libsrt1.5-gnutls libsrt1.5-openssl; do
+            metadata="$(apt-cache show "$candidate" 2>/dev/null || true)"
+            if grep -q "^Package: ${candidate}$" <<<"$metadata"; then
+                srt_package="$candidate"
+                break
+            fi
+        done
+        if [[ -n "$srt_package" ]]; then
+            packages+=("$srt_package")
+        else
+            echo "Aviso: no hay paquete libsrt con ABI 1.5 en los repositorios habilitados." >&2
+            echo "El binario incluido requiere libsrt.so.1.5; se comprobará y se rechazará si falta." >&2
+        fi
         if [[ "$ROLE" == client ]]; then
             packages+=(sudo nftables)
         fi
@@ -59,7 +76,7 @@ install_dependencies() {
     elif command -v pacman >/dev/null 2>&1; then
         echo "Detectado pacman (Arch y derivados)."
         echo "En Arch, actualiza primero el sistema para evitar una actualización parcial: pacman -Syu"
-        local packages=(python tk ffmpeg binutils wayland mesa libdrm gcc-libs)
+        local packages=(python tk ffmpeg binutils wayland mesa libdrm gcc-libs srt)
         if [[ "$ROLE" == client ]]; then
             packages+=(sudo nftables)
         fi

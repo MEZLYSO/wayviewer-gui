@@ -49,7 +49,7 @@ nftables ni un helper local.
 Dependencias del sistema:
   - Python 3 + tkinter
   - FFmpeg (ffplay)
-  - libsrt, libwayland, libdrm, mesa (para el binario wayviewer)
+  - libsrt ABI 1.5, libwayland, libdrm, mesa (para el binario wayviewer)
   - gtk3 (opcional, para el selector de archivos nativo)
 
 Ejecutar:
