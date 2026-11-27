@@ -56,12 +56,13 @@ Dependencias del sistema:
 Ejecutar:
   ./run.sh
 
-Instalar en Mint/Debian o Arch (requiere un binario compatible):
+Instalar en Mint/Debian, Arch o Void Linux (requiere un binario compatible):
   sudo ./packaging/install-admin.sh \$USER
 
-El instalador instala dependencias con apt o pacman y comprueba libc y ABI.
-El binario incluido puede ser específico de Void/musl. En ese caso proporciona
-un build nativo: sudo env WAYVIEWER_BIN=/ruta/wayviewer ./packaging/install-admin.sh \$USER
+El instalador instala dependencias con apt, pacman o xbps-install y comprueba
+libc y ABI. El binario incluido es musl, por lo que encaja con Void Linux (musl).
+En Void glibc u otra ABI, proporciona un build nativo:
+  sudo env WAYVIEWER_BIN=/ruta/wayviewer ./packaging/install-admin.sh \$USER
 
 Bloqueo de /etc/hosts:
   Esta función edita la sección de hosts únicamente en el equipo cliente.

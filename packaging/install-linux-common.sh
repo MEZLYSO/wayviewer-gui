@@ -82,8 +82,18 @@ install_dependencies() {
         fi
         pacman -S --needed --noconfirm "${packages[@]}"
         PACKAGE_FAMILY=arch
+    elif command -v xbps-install >/dev/null 2>&1; then
+        echo "Detectado xbps (Void Linux)."
+        # El binario incluido usa /lib/ld-musl-x86_64.so.1, que encaja con
+        # Void musl. En Void glibc hace falta un build nativo (WAYVIEWER_BIN).
+        local packages=(python3 python3-tkinter ffmpeg binutils libsrt wayland mesa libdrm gtk+3)
+        if [[ "$ROLE" == client ]]; then
+            packages+=(sudo nftables)
+        fi
+        xbps-install -S -y "${packages[@]}"
+        PACKAGE_FAMILY=void
     else
-        echo "Distribución no soportada automáticamente: se requiere apt o pacman." >&2
+        echo "Distribución no soportada automáticamente: se requiere apt, pacman o xbps-install." >&2
         echo "Instala Python 3, Tkinter, FFmpeg, binutils y las bibliotecas Wayland/DRM/GBM manualmente." >&2
         exit 1
     fi
