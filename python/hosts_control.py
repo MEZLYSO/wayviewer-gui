@@ -38,7 +38,7 @@ def expand_domains(items:object)->tuple[list[str],list[str]]:
         candidates=[domain]
         if not domain.startswith("www."):
             www=normalize("www."+domain)
-            if www:candidates.append(www)
+            if www:candidates=[www,domain]
         for candidate in candidates:
             if candidate not in valid:valid.append(candidate)
     return valid,invalid
@@ -48,7 +48,7 @@ def validate_list(items:object)->tuple[list[str]|None,str]:
     valid,invalid=expand_domains(items)
     if invalid:return None,"dominio inválido: "+", ".join(invalid[:3])
     if len(valid)>MAX_DOMAINS:return None,f"máximo {MAX_DOMAINS} dominios (incluidas variantes www)"
-    # Mantener el orden de entrada para emitir /etc/hosts igual que la UI.
+    # La variante www va primero; el resto conserva el orden de entrada.
     return valid,""
 
 def load_local()->list[str]:
