@@ -58,6 +58,7 @@ FILE_DIR = os.path.join(os.path.expanduser("~"), "wayviewer")
 CHAT_CHUNK = 24 * 1024
 MAX_FILE_SIZE = 8 * 1024**3
 FILE_MAGIC = "\x01WV"
+HOSTS_REQUEST_TIMEOUT_MS = 15000
 
 # Paleta oscura.
 BG = "#0f1115"
@@ -872,6 +873,8 @@ class WayViewerPanel:
         self.var_host_domain = tk.StringVar(value="")
         self.hosts = hosts_control.load_local()
         self.hosts_dirty = False
+        self.hosts_pending: str | None = None
+        self.hosts_timeout_after: str | None = None
 
         self._configure_window()
         self._build_header()
@@ -921,7 +924,7 @@ class WayViewerPanel:
         ).pack(anchor="w")
         self.header_subtitle = tk.Label(
             words,
-            text="Administración: controles de entrada y ping",
+            text="Administración: entrada, ping, hosts y suspensión",
             bg=HEADER,
             fg=MUTED,
             font=("DejaVu Sans", 9),
@@ -1058,6 +1061,7 @@ class WayViewerPanel:
         self._arrange_footer()
         self._arrange_file_row()
         self._arrange_control_row()
+        self._arrange_hosts_actions()
         self._arrange_header()
         self._arrange_chat_head()
         self._arrange_chips()
@@ -1154,17 +1158,72 @@ class WayViewerPanel:
         row.grid_columnconfigure(5, weight=1)
         self.block_btn.grid(row=0, column=0, sticky="w")
         self.unblock_btn.grid(row=0, column=1, sticky="w", padx=(8, 0))
-        self.ping_block_btn.grid(row=0, column=2, sticky="w", padx=(8, 0))
-        self.ping_unblock_btn.grid(row=0, column=3, sticky="w", padx=(8, 0))
-        if self.layout_mode == "narrow":
+        self.ping_block_btn.grid(
+            row=0, column=2, sticky="w", padx=(8, 0), pady=(0, 0)
+        )
+        self.ping_unblock_btn.grid(
+            row=0, column=3, sticky="w", padx=(8, 0), pady=(0, 0)
+        )
+        if self.layout_mode == "wide":
+            self.suspend_btn.grid(
+                row=0, column=4, sticky="w", padx=(8, 0), pady=(0, 0)
+            )
+            self.control_status.grid(
+                row=0, column=5, sticky="ew", padx=(12, 0), pady=(0, 0)
+            )
+        elif self.layout_mode == "medium":
             self.suspend_btn.grid(row=1, column=0, sticky="w", pady=(6, 0))
             self.control_status.grid(
-                row=2, column=0, columnspan=5, sticky="ew", pady=(6, 0)
+                row=1, column=1, columnspan=5, sticky="ew",
+                padx=(12, 0), pady=(6, 0),
             )
         else:
-            self.suspend_btn.grid(row=0, column=4, sticky="w", padx=(8, 0))
+            self.ping_block_btn.grid_configure(row=1, column=0, padx=(0, 0), pady=(6, 0))
+            self.ping_unblock_btn.grid_configure(row=1, column=1, pady=(6, 0))
+            self.suspend_btn.grid(row=2, column=0, sticky="w", pady=(6, 0))
             self.control_status.grid(
-                row=0, column=5, sticky="ew", padx=(12, 0)
+                row=2, column=1, columnspan=5, sticky="ew",
+                padx=(12, 0), pady=(6, 0),
+            )
+
+    def _arrange_hosts_actions(self) -> None:
+        if not hasattr(self, "hosts_actions"):
+            return
+        actions = self.hosts_actions
+        for widget in (
+            self.host_domain_entry,
+            self.host_add_btn,
+            self.host_remove_btn,
+            self.host_sync_btn,
+            self.host_apply_btn,
+        ):
+            widget.grid_forget()
+        actions.grid_columnconfigure(0, weight=1)
+        if self.layout_mode == "narrow":
+            self.host_domain_entry.grid(row=0, column=0, columnspan=3, sticky="ew")
+            self.host_add_btn.grid(row=1, column=0, sticky="w", pady=(8, 0))
+            self.host_remove_btn.grid(
+                row=1, column=1, sticky="w", padx=(8, 0), pady=(8, 0)
+            )
+            self.host_sync_btn.grid(row=2, column=0, sticky="w", pady=(8, 0))
+            self.host_apply_btn.grid(
+                row=2, column=1, sticky="w", padx=(8, 0), pady=(8, 0)
+            )
+        else:
+            self.host_domain_entry.grid(
+                row=0, column=0, columnspan=1, sticky="ew", padx=(0, 0), pady=(0, 0)
+            )
+            self.host_add_btn.grid(
+                row=0, column=1, sticky="w", padx=(8, 0), pady=(0, 0)
+            )
+            self.host_remove_btn.grid(
+                row=0, column=2, sticky="w", padx=(8, 0), pady=(0, 0)
+            )
+            self.host_sync_btn.grid(
+                row=1, column=0, sticky="w", padx=(0, 0), pady=(8, 0)
+            )
+            self.host_apply_btn.grid(
+                row=1, column=1, sticky="w", padx=(8, 0), pady=(8, 0)
             )
 
     def _arrange_header(self) -> None:
@@ -1173,7 +1232,7 @@ class WayViewerPanel:
             text=(
                 "Administración · controles"
                 if narrow
-                else "Administración: controles de entrada y ping"
+                else "Administración: entrada, ping, hosts y suspensión"
             )
         )
         self.refresh_btn.configure(
@@ -1601,46 +1660,135 @@ class WayViewerPanel:
             columns, "HOSTS", "Bloquear dominios en /etc/hosts", AMBER
         )
         self.hosts_card = hosts_card
-        hosts_inner.grid_propagate(False)
-        tk.Label(
-            hosts_inner,
-            text="Se enviará al cliente para agregar 127.0.0.1 y ::1 en /etc/hosts.",
+
+        hosts_head = tk.Frame(hosts_inner, bg=PANEL)
+        hosts_head.pack(fill="x")
+        hosts_hint = tk.Label(
+            hosts_head,
+            text=(
+                "Se enviará al cliente: IPv4, IPv6 y variante www. "
+                "Intro para añadir, doble clic para quitar."
+            ),
             bg=PANEL, fg=MUTED, font=("DejaVu Sans", 9), anchor="w", justify="left",
-        ).pack(fill="x", pady=(8, 0))
+        )
+        hosts_hint.pack(side="left", fill="x", expand=True)
+        self._bind_wrap(hosts_hint, 120)
+        self.hosts_counter = tk.Label(
+            hosts_head, text="", bg=PANEL, fg=MUTED,
+            font=("DejaVu Sans", 8, "bold"), anchor="e",
+        )
+        self.hosts_counter.pack(side="right", padx=(12, 0))
+
         frame = tk.Frame(hosts_inner, bg="#0b0e13", highlightthickness=1, highlightbackground=BORDER)
         frame.pack(fill="both", expand=True, pady=(8, 0))
         scroll = tk.Scrollbar(frame)
         scroll.pack(side="right", fill="y")
         self.hosts_listbox = tk.Listbox(
             frame, bg="#0b0e13", fg=FG, relief="flat", highlightthickness=0,
-            height=5, yscrollcommand=scroll.set,
+            height=6, yscrollcommand=scroll.set,
         )
         self.hosts_listbox.pack(side="left", fill="both", expand=True)
         scroll.configure(command=self.hosts_listbox.yview)
+        self.hosts_listbox.bind("<Delete>", lambda _event: self._remove_host())
+        self.hosts_listbox.bind("<Double-Button-1>", lambda _event: self._remove_host())
+
         actions = tk.Frame(hosts_inner, bg=PANEL)
+        self.hosts_actions = actions
         actions.pack(fill="x", pady=(8, 0))
         self.host_domain_entry = self._dark_entry(actions, self.var_host_domain, 28)
-        self.host_domain_entry.grid(row=0, column=0, sticky="ew")
-        self.host_add_btn = tk.Button(actions, text="Añadir", command=self._add_host, bg=CHIP, fg=FG, relief="flat", padx=10)
-        self.host_add_btn.grid(row=0, column=1, padx=(8, 0))
-        self.host_remove_btn = tk.Button(actions, text="Quitar", command=self._remove_host, bg=CHIP, fg=FG, relief="flat", padx=10)
-        self.host_remove_btn.grid(row=0, column=2, padx=(8, 0))
-        self.host_sync_btn = tk.Button(actions, text="Recibir lista", command=self._sync_hosts, bg=CHIP, fg=FG, relief="flat", padx=10)
-        self.host_sync_btn.grid(row=1, column=0, pady=(8, 0))
-        self.host_apply_btn = tk.Button(actions, text="Aplicar", command=self._apply_hosts, bg=ACCENT, fg="#fff", relief="flat", padx=10)
-        self.host_apply_btn.grid(row=1, column=1, padx=(8, 0), pady=(8, 0))
-        self.host_status = tk.Label(hosts_inner, text="", bg=PANEL, fg=MUTED, font=("DejaVu Sans", 9), anchor="w")
+        self.host_domain_entry.bind("<Return>", lambda _event: self._add_host())
+        self.host_add_btn = tk.Button(
+            actions, text="Añadir", command=self._add_host,
+            bg=CHIP, fg=FG, relief="flat", padx=10, pady=4,
+        )
+        self.host_remove_btn = tk.Button(
+            actions, text="Quitar", command=self._remove_host,
+            bg=CHIP, fg=FG, relief="flat", padx=10, pady=4,
+        )
+        self.host_sync_btn = tk.Button(
+            actions, text="Recibir lista", command=self._sync_hosts,
+            bg=CHIP, fg=FG, relief="flat", padx=10, pady=4,
+        )
+        self.host_apply_btn = tk.Button(
+            actions, text="Aplicar", command=self._apply_hosts,
+            bg=ACCENT, fg="#ffffff", activebackground="#1f6feb",
+            relief="flat", padx=12, pady=4,
+            font=("DejaVu Sans", 9, "bold"),
+        )
+        self.host_status = tk.Label(
+            hosts_inner, text="", bg=PANEL, fg=MUTED,
+            font=("DejaVu Sans", 9), anchor="w", justify="left",
+        )
         self.host_status.pack(fill="x", pady=(6, 0))
-        actions.grid_columnconfigure(0, weight=1)
+        self._bind_wrap(self.host_status, 120)
         self._refresh_hosts()
+        self._arrange_hosts_actions()
+        self._update_host_buttons()
 
     def _set_host_status(self, message: str, color: str = MUTED) -> None:
         self.host_status.configure(text=message, fg=color)
+
+    def _update_hosts_counter(self) -> None:
+        if not hasattr(self, "hosts_counter"):
+            return
+        suffix = " · sin aplicar" if self.hosts_dirty else ""
+        self.hosts_counter.configure(
+            text=f"{len(self.hosts)} dominios{suffix}",
+            fg=AMBER if self.hosts_dirty else MUTED,
+        )
+
+    def _update_host_buttons(self) -> None:
+        if not hasattr(self, "host_apply_btn"):
+            return
+        busy = self.hosts_pending is not None
+        editable = "disabled" if busy else "normal"
+        remote = "normal" if self.chat_connected and not busy else "disabled"
+        removable = (
+            "normal"
+            if not busy and self.hosts_listbox.size() > 0
+            else "disabled"
+        )
+        self.host_domain_entry.configure(state=editable)
+        self.host_add_btn.configure(state=editable)
+        self.host_remove_btn.configure(state=removable)
+        self.host_sync_btn.configure(state=remote)
+        self.host_apply_btn.configure(state=remote)
+        self._update_hosts_counter()
+
+    def _start_hosts_request(self, kind: str, message: str) -> bool:
+        if self.hosts_pending is not None:
+            self._set_host_status("Esperando la respuesta anterior…", AMBER)
+            return False
+        self.hosts_pending = kind
+        self._set_host_status(message, AMBER)
+        self._update_host_buttons()
+        if self.hosts_timeout_after is not None:
+            self.root.after_cancel(self.hosts_timeout_after)
+        self.hosts_timeout_after = self.root.after(
+            HOSTS_REQUEST_TIMEOUT_MS, self._hosts_request_timeout
+        )
+        return True
+
+    def _finish_hosts_request(self) -> None:
+        self.hosts_pending = None
+        if self.hosts_timeout_after is not None:
+            self.root.after_cancel(self.hosts_timeout_after)
+            self.hosts_timeout_after = None
+        self._update_host_buttons()
+
+    def _hosts_request_timeout(self) -> None:
+        kind = self.hosts_pending or "operación"
+        self.hosts_timeout_after = None
+        self._finish_hosts_request()
+        self._set_host_status(f"{kind}: el cliente no respondió.", RED)
 
     def _refresh_hosts(self) -> None:
         self.hosts_listbox.delete(0, "end")
         for domain in self.hosts:
             self.hosts_listbox.insert("end", domain)
+        self._update_hosts_counter()
+        if hasattr(self, "host_remove_btn"):
+            self._update_host_buttons()
 
     def _add_host(self) -> None:
         domain = hosts_control.normalize(self.var_host_domain.get())
@@ -1673,26 +1821,44 @@ class WayViewerPanel:
     def _sync_hosts(self) -> None:
         if not self.chat_connected:
             self._set_host_status("Conecta el chat primero.", AMBER); return
+        if not self._start_hosts_request("Recibir lista", "Solicitando lista al cliente…"):
+            return
         if not self.chat.send_control(sway_control.build_hosts_get()):
-            self._set_host_status("No se pudo solicitar la lista.", RED); return
-        self._set_host_status("Solicitando lista al cliente…", AMBER)
+            self._finish_hosts_request()
+            self._set_host_status("No se pudo solicitar la lista.", RED)
 
     def _apply_hosts(self) -> None:
         if not self.chat_connected:
             self._set_host_status("Conecta el chat primero.", AMBER); return
-        if not self.chat.send_control(sway_control.build_hosts_set(self.hosts)):
-            self._set_host_status("No se pudo enviar la lista.", RED); return
-        self._set_host_status(f"Enviando {len(self.hosts)} dominios…", AMBER)
-
-    def _apply_hosts_state(self, payload: str) -> None:
-        try: items = json.loads(payload)
-        except ValueError:
-            self._set_host_status("Lista inválida.", RED); return
-        domains, error = hosts_control.validate_list(items)
+        domains, error = hosts_control.validate_list(self.hosts)
         if error:
             self._set_host_status(error, RED); return
-        self.hosts = domains; self.hosts_dirty = False
-        hosts_control.save_local(domains)
+        self.hosts = domains
+        self._refresh_hosts()
+        if not self._start_hosts_request(
+            "Aplicar lista", f"Enviando {len(domains)} dominios…"
+        ):
+            return
+        if not self.chat.send_control(sway_control.build_hosts_set(domains)):
+            self._finish_hosts_request()
+            self._set_host_status("No se pudo enviar la lista.", RED)
+
+    def _apply_hosts_state(self, payload: str) -> None:
+        try:
+            items = json.loads(payload)
+        except ValueError:
+            self._set_host_status("Lista inválida.", RED)
+            return
+        domains, error = hosts_control.validate_list(items)
+        if error:
+            self._set_host_status(error, RED)
+            return
+        self.hosts = domains
+        self.hosts_dirty = False
+        try:
+            hosts_control.save_local(domains)
+        except OSError:
+            pass
         self._refresh_hosts()
         self._set_host_status(f"Lista aplicada: {len(domains)} dominios.", GREEN)
 
@@ -2037,6 +2203,7 @@ class WayViewerPanel:
             self.ping_block_btn.configure(state="normal")
             self.ping_unblock_btn.configure(state="normal")
             self.suspend_btn.configure(state="normal")
+            self._update_host_buttons()
             self.chat_entry.focus_set()
         else:
             self.client_ip_entry.configure(state="normal")
@@ -2061,6 +2228,7 @@ class WayViewerPanel:
                 "Control remoto: conecta el chat para administrar el cliente.",
                 MUTED,
             )
+            self._update_host_buttons()
 
     def _send_chat(self, _event: object = None) -> str:
         if not self.chat_connected:
@@ -2292,11 +2460,12 @@ class WayViewerPanel:
                 elif kind == "hosts_state":
                     self._apply_hosts_state(payload)
                 elif kind == "hosts_ack":
+                    self._finish_hosts_request()
                     ok_text, detail = self._split_payload(payload)
                     if ok_text == "1":
-                        self._set_host_status(detail, GREEN)
+                        self._set_host_status(detail or "Lista aplicada.", GREEN)
                     else:
-                        self._set_host_status(detail, RED)
+                        self._set_host_status(detail or "El cliente rechazó la lista.", RED)
                 elif kind == "file_pick_done":
                     self.picking_file = False
                     self.file_btn.configure(
