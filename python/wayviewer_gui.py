@@ -33,10 +33,11 @@ from collections import deque
 
 import sway_control
 import hosts_control
+import discovery
 
 try:
     import tkinter as tk
-    from tkinter import messagebox
+    from tkinter import messagebox, ttk
 except ModuleNotFoundError:  # pragma: no cover - depende del sistema
     sys.stderr.write(
         "Falta el módulo tkinter.\n"
@@ -841,6 +842,9 @@ class WayViewerPanel:
         }
         self.event_queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self.chat_events: queue.Queue[tuple[str, str]] = queue.Queue()
+        self.discovery = discovery.Listener(self.chat_events)
+        self.selected_clients: set[str] = set()
+        self.active_client_ip = ""
         self.chat_connected = False
         self.chat_connecting = False
         self.picking_file = False
@@ -880,6 +884,7 @@ class WayViewerPanel:
         self._build_header()
         self._build_body()
         self.chat = TcpChat(CHAT_PORT, self.chat_events)
+        self.discovery.start()
         self._apply_chat_state(False)
         self._refresh_interfaces(force=True)
         self._apply_state("stopped")
@@ -1062,6 +1067,7 @@ class WayViewerPanel:
         self._arrange_file_row()
         self._arrange_control_row()
         self._arrange_hosts_actions()
+        self._arrange_clients_table()
         self._arrange_header()
         self._arrange_chat_head()
         self._arrange_chips()
@@ -1076,29 +1082,29 @@ class WayViewerPanel:
 
     def _arrange_cards(self) -> None:
         columns = self.columns_frame
-        self.tx_card.grid_forget()
-        self.cx_card.grid_forget()
-        self.hosts_card.grid_forget()
+        for card in (self.clients_card, self.tx_card, self.cx_card, self.hosts_card):
+            card.grid_forget()
+        columns.grid_columnconfigure(0, weight=0, minsize=362)
+        columns.grid_columnconfigure(1, weight=1)
+        self.clients_card.grid(row=0, column=0, columnspan=2, sticky="ew")
         if self.layout_mode == "wide":
-            columns.grid_columnconfigure(0, weight=0, minsize=362)
-            columns.grid_columnconfigure(1, weight=1)
-            columns.grid_rowconfigure(0, weight=1)
-            columns.grid_rowconfigure(1, weight=0)
+            columns.grid_rowconfigure(1, weight=1)
             columns.grid_rowconfigure(2, weight=0)
-            self.tx_card.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
-            self.cx_card.grid(row=0, column=1, sticky="nsew")
-            self.hosts_card.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(16, 0))
+            columns.grid_rowconfigure(3, weight=0)
+            self.tx_card.grid(row=1, column=0, sticky="nsew", padx=(0, 16))
+            self.cx_card.grid(row=1, column=1, sticky="nsew")
+            self.hosts_card.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(16, 0))
         else:
             columns.grid_columnconfigure(0, weight=1, minsize=0)
             columns.grid_columnconfigure(1, weight=0, minsize=0)
-            columns.grid_rowconfigure(0, weight=0)
             columns.grid_rowconfigure(1, weight=0)
             columns.grid_rowconfigure(2, weight=0)
+            columns.grid_rowconfigure(3, weight=0)
             self.tx_card.grid(
-                row=0, column=0, columnspan=2, sticky="ew", pady=(0, 14)
+                row=1, column=0, columnspan=2, sticky="ew", pady=(14, 0)
             )
-            self.cx_card.grid(row=1, column=0, columnspan=2, sticky="ew")
-            self.hosts_card.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(14, 0))
+            self.cx_card.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(14, 0))
+            self.hosts_card.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(14, 0))
 
     def _arrange_client_fields(self) -> None:
         if self.layout_mode == "narrow":
@@ -1226,6 +1232,24 @@ class WayViewerPanel:
                 row=1, column=1, sticky="w", padx=(8, 0), pady=(8, 0)
             )
 
+    def _arrange_clients_table(self) -> None:
+        if not hasattr(self, "clients_tree"):
+            return
+        if self.layout_mode == "narrow":
+            self.clients_tree.configure(displaycolumns=("sel", "name", "ip"))
+            self.clients_tree.column("sel", width=38)
+            self.clients_tree.column("name", width=130)
+            self.clients_tree.column("ip", width=130)
+        else:
+            self.clients_tree.configure(
+                displaycolumns=("sel", "name", "ip", "seen", "chat")
+            )
+            self.clients_tree.column("sel", width=44)
+            self.clients_tree.column("name", width=180)
+            self.clients_tree.column("ip", width=150)
+            self.clients_tree.column("seen", width=100)
+            self.clients_tree.column("chat", width=90)
+
     def _arrange_header(self) -> None:
         narrow = self.layout_mode == "narrow"
         self.header_subtitle.configure(
@@ -1305,7 +1329,98 @@ class WayViewerPanel:
         columns.pack(fill="both", expand=True)
         columns.grid_columnconfigure(0, weight=0, minsize=362)
         columns.grid_columnconfigure(1, weight=1)
-        columns.grid_rowconfigure(0, weight=1)
+        columns.grid_rowconfigure(0, weight=0)
+        columns.grid_rowconfigure(1, weight=1)
+        columns.grid_rowconfigure(2, weight=0)
+        columns.grid_rowconfigure(3, weight=0)
+
+        # --- Clientes descubiertos en la LAN -----------------------------
+        clients_card, clients_inner = self._make_card(
+            columns, "LAN", "Clientes disponibles", ACCENT
+        )
+        self.clients_card = clients_card
+        clients_head = tk.Frame(clients_inner, bg=PANEL)
+        clients_head.pack(fill="x")
+        clients_hint = tk.Label(
+            clients_head,
+            text=(
+                f"Anuncios UDP {discovery.PORT}. Marca □ para seleccionar "
+                "clientes; la casilla se actualiza sola."
+            ),
+            bg=PANEL, fg=MUTED, font=("DejaVu Sans", 9), anchor="w", justify="left",
+        )
+        clients_hint.pack(side="left", fill="x", expand=True)
+        self._bind_wrap(clients_hint, 120)
+        self.clients_status = tk.Label(
+            clients_head, text="Buscando clientes…", bg=PANEL, fg=MUTED,
+            font=("DejaVu Sans", 8, "bold"), anchor="e",
+        )
+        self.clients_status.pack(side="right", padx=(12, 0))
+
+        clients_frame = tk.Frame(
+            clients_inner, bg="#0b0e13",
+            highlightthickness=1, highlightbackground=BORDER,
+        )
+        clients_frame.pack(fill="both", expand=True, pady=(8, 0))
+        clients_scroll = ttk.Scrollbar(clients_frame, orient="vertical")
+        clients_scroll.pack(side="right", fill="y")
+        style = ttk.Style(self.root)
+        style.configure(
+            "WayViewer.Treeview",
+            background="#0b0e13",
+            fieldbackground="#0b0e13",
+            foreground=FG,
+            borderwidth=0,
+            rowheight=26,
+            font=("DejaVu Sans", 9),
+        )
+        style.configure(
+            "WayViewer.Treeview.Heading",
+            background=CHIP,
+            foreground=FG,
+            font=("DejaVu Sans", 8, "bold"),
+            borderwidth=0,
+        )
+        style.map("WayViewer.Treeview", background=[("selected", "#1f6feb")])
+        self.clients_tree = ttk.Treeview(
+            clients_frame,
+            columns=("sel", "name", "ip", "seen", "chat"),
+            show="headings",
+            height=4,
+            style="WayViewer.Treeview",
+            yscrollcommand=clients_scroll.set,
+        )
+        for key, text, width in (
+            ("sel", "✓", 44),
+            ("name", "Cliente", 180),
+            ("ip", "IP", 150),
+            ("seen", "Visto", 100),
+            ("chat", "Chat", 90),
+        ):
+            self.clients_tree.heading(key, text=text)
+            self.clients_tree.column(
+                key, width=width, anchor="center" if key in ("sel", "chat") else "w"
+            )
+        self.clients_tree.pack(side="left", fill="both", expand=True)
+        clients_scroll.configure(command=self.clients_tree.yview)
+        self.clients_tree.bind("<Button-1>", self._on_client_click)
+
+        clients_actions = tk.Frame(clients_inner, bg=PANEL)
+        clients_actions.pack(fill="x", pady=(8, 0))
+        self.clients_use_btn = tk.Button(
+            clients_actions,
+            text="Usar IP seleccionada",
+            command=self._use_selected_client_ip,
+            bg=CHIP, fg=FG, relief="flat", padx=10, pady=4,
+        )
+        self.clients_use_btn.pack(side="left")
+        self.clients_clear_btn = tk.Button(
+            clients_actions,
+            text="Quitar marcas",
+            command=self._clear_client_selection,
+            bg=CHIP, fg=FG, relief="flat", padx=10, pady=4,
+        )
+        self.clients_clear_btn.pack(side="left", padx=(8, 0))
 
         # --- Columna izquierda: Transmitir imagen -------------------------
         tx_card, tx = self._make_card(
@@ -1724,6 +1839,72 @@ class WayViewerPanel:
         self._refresh_hosts()
         self._arrange_hosts_actions()
         self._update_host_buttons()
+
+    def _refresh_clients(self) -> None:
+        tree = getattr(self, "clients_tree", None)
+        if tree is None:
+            return
+        clients = self.discovery.clients()
+        valid = {client["id"] for client in clients}
+        self.selected_clients.intersection_update(valid)
+        tree.delete(*tree.get_children())
+        now = time.time()
+        for client in sorted(
+            clients, key=lambda item: (item["name"].lower(), item["ip"])
+        ):
+            age = max(0, int(now - client["seen"]))
+            seen = "ahora" if age < 2 else f"hace {age}s"
+            connected = self.chat_connected and client["ip"] in (
+                self.active_client_ip,
+                self.var_client_ip.get(),
+            )
+            mark = "☑" if client["id"] in self.selected_clients else "☐"
+            tree.insert(
+                "", "end", iid=client["id"],
+                values=(mark, client["name"], client["ip"], seen, "sí" if connected else "—"),
+            )
+        count = len(clients)
+        self.clients_status.configure(
+            text=f"{count} cliente(s) · UDP {discovery.PORT}",
+            fg=GREEN if count else MUTED,
+        )
+        state = "normal" if self.selected_clients else "disabled"
+        self.clients_use_btn.configure(state=state)
+        self.clients_clear_btn.configure(state=state)
+
+    def _on_client_click(self, event: tk.Event) -> str | None:
+        tree = self.clients_tree
+        if tree.identify_region(event.x, event.y) != "cell":
+            return None
+        if tree.identify_column(event.x) != "#1":
+            return None
+        item = tree.identify_row(event.y)
+        if not item:
+            return None
+        if item in self.selected_clients:
+            self.selected_clients.discard(item)
+        else:
+            self.selected_clients.add(item)
+        self._refresh_clients()
+        return "break"
+
+    def _use_selected_client_ip(self) -> None:
+        clients = {client["id"]: client for client in self.discovery.clients()}
+        chosen = next(
+            (clients[key] for key in self.selected_clients if key in clients), None
+        )
+        if chosen is None:
+            self.clients_status.configure(text="Cliente no disponible.", fg=AMBER)
+            return
+        self.var_client_ip.set(chosen["ip"])
+        self.clients_status.configure(
+            text=f"IP {chosen['ip']} lista para conectar.", fg=GREEN
+        )
+        self._refresh_clients()
+
+    def _clear_client_selection(self) -> None:
+        self.selected_clients.clear()
+        self._refresh_clients()
 
     def _set_host_status(self, message: str, color: str = MUTED) -> None:
         self.host_status.configure(text=message, fg=color)
@@ -2407,18 +2588,27 @@ class WayViewerPanel:
         try:
             while True:
                 kind, payload = self.chat_events.get_nowait()
-                if kind == "chat_connected":
+                if kind == "discovery_update":
+                    self._refresh_clients()
+                elif kind == "chat_connected":
                     self.chat_connecting = False
                     if payload.startswith("Conexión entrante de "):
                         peer = payload.split("Conexión entrante de ", 1)[1].strip()
                         ip_text = peer.rsplit(":", 1)[0]
                         if ip_text:
                             self.var_client_ip.set(ip_text)
+                            self.active_client_ip = ip_text
+                    elif payload.startswith("Chat conectado a "):
+                        ip_text = payload.split("Chat conectado a ", 1)[1].strip()
+                        self.active_client_ip = ip_text.rsplit(":", 1)[0]
                     self._apply_chat_state(True)
+                    self._refresh_clients()
                     self._chat_append("system", payload)
                 elif kind == "chat_disconnected":
                     self.chat_connecting = False
+                    self.active_client_ip = ""
                     self._apply_chat_state(False)
+                    self._refresh_clients()
                     self._chat_append("system", payload)
                 elif kind == "chat_error":
                     self.chat_connecting = False
@@ -3018,6 +3208,7 @@ class WayViewerPanel:
         self.stop_requested.set()
         self._terminate_ffplay(grace=min(0.6, grace))
         self.chat.stop()
+        self.discovery.stop()
         self._terminate_picker()
         self._terminate_all(grace=grace)
 

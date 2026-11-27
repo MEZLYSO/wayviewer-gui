@@ -24,6 +24,7 @@ install -m 0644 "${ROOT}/python/wayviewer_gui.py" "${DEST}/python/"
 install -m 0644 "${ROOT}/python/wayviewer_relay.py" "${DEST}/python/"
 install -m 0644 "${ROOT}/python/sway_control.py" "${DEST}/python/"
 install -m 0644 "${ROOT}/python/hosts_control.py" "${DEST}/python/"
+install -m 0644 "${ROOT}/python/discovery.py" "${DEST}/python/"
 install -m 0755 "${ROOT}/packaging/install-admin.sh" "${DEST}/packaging/"
 install -m 0755 "${ROOT}/packaging/install-linux-common.sh" "${DEST}/packaging/"
 install -m 0755 "${ROOT}/run.sh" "${DEST}/"
@@ -53,9 +54,13 @@ un build nativo: sudo env WAYVIEWER_BIN=/ruta/wayviewer ./packaging/install-admi
 Bloqueo de /etc/hosts:
   Esta función edita la sección de hosts únicamente en el equipo cliente.
 
+Descubrimiento LAN:
+  El panel muestra clientes que anuncian UDP en el puerto 9501.
+
 Variables útiles:
   WAYVIEWER_BIN=/ruta/alternativa/wayviewer
   WAYVIEWER_CHAT_PORT=9500
+  WAYVIEWER_DISCOVERY_PORT=9501
   WAYVIEWER_UNIX_SOCKET=/tmp/wayviewer-\$UID.sock
 README
 OUT="${ROOT}/dist"
